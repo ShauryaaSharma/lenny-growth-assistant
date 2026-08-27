@@ -130,7 +130,16 @@ async def run_agent(
             continue
 
         # The model produced a final answer. Decide whether to accept it.
-        if needs_grounding and not ctx.searched and not nudged:
+        #
+        # If an artifact-creation reminder just fired, this answer is expected
+        # to be the short acknowledgment it asked for -- not a content answer
+        # needing its own grounding. Applying the search-first gate here would
+        # reject that compliant reply and force a pointless extra retrieval
+        # cycle. Observed live: a direct create_artifact call (no search
+        # involved) was correctly followed by a one-line description, which
+        # was then incorrectly rejected by this exact check, burning an entire
+        # extra iteration before the turn could finish.
+        if needs_grounding and not ctx.searched and not nudged and not artifact_reminder_sent:
             log.info("forcing_retrieval", session_id=str(session_id))
             nudged = True
             messages.append(ChatMessage(role="assistant", content=response.content))

@@ -284,6 +284,12 @@ class TestArtifactCreatedReminder:
         # failure, since a small model weighs recent context most heavily.
         second_call_messages = provider.calls[1]
         assert "just created a document artifact" in second_call_messages[-1].content
+        # Regression: create_artifact never calls search_transcripts, so
+        # ctx.searched stays False. Without excluding the reminder turn from
+        # the forced-retrieval gate, this exact compliant reply was rejected
+        # and forced into a pointless extra search cycle, observed live.
+        assert result.content == "I put together the document in the panel."
+        assert result.iterations == 2
         assert "Doc" in second_call_messages[-1].content
 
     async def test_reminder_wins_even_when_a_search_call_happens_in_the_same_turn(
