@@ -74,7 +74,7 @@ Runs entirely on your machine. No API key required.
 │   ├── architecture.md        # schema, request lifecycle, security, deployment
 │   ├── design.md                # UI/UX principles, states, accessibility
 │   └── test-plan.md              # manual UI test plan
-├── agent-transcripts/         # 11 entries: real defects (incl. 2 live hallucinations) found, fixed
+├── agent-transcripts/         # 12 entries: real defects (incl. 2 live hallucinations) found, fixed
 ├── docker-compose.yml
 └── .env.example
 ```
@@ -99,7 +99,7 @@ For an evaluator checking requirements against implementation directly:
 | 6.3 PRD | [docs/PRD.md](docs/PRD.md) |
 | 6.4 design.md | [docs/design.md](docs/design.md) |
 | 6.5 architecture.md | [docs/architecture.md](docs/architecture.md) |
-| 6.6 Agent transcripts | [agent-transcripts/](agent-transcripts/) -- 11 entries, including 4 real defects found and fixed by running the system live (2 of them live hallucinations caught by the agent harness) and a real grounding-threshold defect caught by the retrieval eval harness |
+| 6.6 Agent transcripts | [agent-transcripts/](agent-transcripts/) -- 12 entries, including 4 real defects found and fixed by running the system live (2 of them live hallucinations caught by the agent harness) and a real grounding-threshold defect caught by the retrieval eval harness |
 | 6.7 Tests | 153 automated tests -- see [Testing](#testing) -- plus a 24-question retrieval eval harness and an 8-scenario agent harness ([Evaluation](#evaluation)) and [docs/test-plan.md](docs/test-plan.md) |
 | 6.8 Demo video | Not part of this repository; recorded separately per the submission instructions |
 

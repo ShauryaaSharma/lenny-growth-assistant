@@ -436,6 +436,11 @@ diagnose model, retrieval, database, and artifact-rendering failures") at the
 execution-graph level, one layer more granular than the structured stdout
 logs `app.logging` already provides.
 
+Verified against a live run, not just unit tests: a real chat turn against the
+running Ollama model produced real rows at `GET /api/sessions/{id}/trace` --
+per-iteration `llm_call` spans with actual prompt/completion token counts and
+duration, and a `tool_call` span for the retrieval that grounded the answer.
+
 ### The Ship 30 skill pipeline
 
 ```
