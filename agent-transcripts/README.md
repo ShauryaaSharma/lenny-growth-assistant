@@ -108,6 +108,16 @@ behaviour rather than just structure.
    `test_ship30_skill.py` file that didn't exist before this), both
    re-verified live — see
    [08-conflicting-tool-instructions-and-a-literal-placeholder.md](08-conflicting-tool-instructions-and-a-literal-placeholder.md).
+8. Re-verifying that fix live surfaced the single most expensive bug in the
+   build: a successful essay generation left `ctx.searched` unset, so the
+   agent loop concluded the model had never searched and forced a redundant
+   re-search — which led the model into regenerating the *entire* multi-minute
+   essay pipeline a second time, unconditionally, on every success. Confirmed
+   with a deliberate revert-and-retest (six tests correctly failed without the
+   fix, including a new end-to-end reproduction), fixed, and re-verified live
+   with ingestion paused for a clean signal: one essay generation, coherent
+   description, real citations. See
+   [09-the-most-expensive-bug-essay-success-triggered-a-re-search.md](09-the-most-expensive-bug-essay-success-triggered-a-re-search.md).
 
 ## What this log is trying to demonstrate
 
