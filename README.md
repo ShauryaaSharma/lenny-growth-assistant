@@ -12,6 +12,8 @@ Runs entirely on your machine. No API key required.
 ## Contents
 
 - [What it does](#what-it-does)
+- [Repository structure](#repository-structure)
+- [How this maps to the assignment brief](#how-this-maps-to-the-assignment-brief)
 - [Quick start](#quick-start)
 - [Architecture at a glance](#architecture-at-a-glance)
 - [Configuration](#configuration)
@@ -33,6 +35,67 @@ Runs entirely on your machine. No API key required.
 | **Artifacts** | Markdown or HTML/CSS documents rendered in a sandboxed panel beside the chat. |
 | **Sessions** | Independent conversations, persisted in Postgres with full history and provenance. |
 | **Model toggle** | Local Ollama or any OpenAI-compatible cloud endpoint, switched by one env var. |
+
+---
+
+## Repository structure
+
+```
+.
+├── backend/
+│   ├── app/
+│   │   ├── agent/           # runtime.py (the agent loop + 3 deterministic guards),
+│   │   │                     prompts.py (system prompt, guard text), tools.py (registry)
+│   │   ├── api/              # FastAPI routers: chat, sessions, artifacts, health
+│   │   ├── db/                # SQLAlchemy models + async session lifecycle
+│   │   ├── llm/                # LLMProvider interface + Ollama / OpenAI-compat / registry
+│   │   ├── rag/                  # chunking, embeddings, hybrid retriever, ingestion CLI
+│   │   ├── schemas/                # Pydantic request/response contracts
+│   │   ├── security/                # HTML/Markdown sanitiser (see architecture.md#security)
+│   │   ├── skills/ship30/             # principles.md (data) + skill.py (pipeline)
+│   │   ├── config.py, logging.py, main.py
+│   ├── alembic/                # one migration: the full schema
+│   ├── tests/                  # 94 tests -- see docs/architecture.md#testing-strategy
+│   └── Dockerfile, requirements*.txt
+├── frontend/
+│   ├── app/                  # Next.js app router: layout, page, global styles
+│   ├── components/            # ArtifactViewer (the sandboxed renderer), Composer,
+│   │                            MessageBubble, ProviderBadge, SessionSidebar
+│   ├── lib/                    # typed API client + shared types
+│   └── Dockerfile
+├── docs/
+│   ├── PRD.md                # discovery brief, success metrics, scope, risks
+│   ├── architecture.md        # schema, request lifecycle, security, deployment
+│   ├── design.md                # UI/UX principles, states, accessibility
+│   └── test-plan.md              # manual UI test plan
+├── agent-transcripts/         # 10 entries: real defects found live, root-caused, fixed
+├── docker-compose.yml
+└── .env.example
+```
+
+---
+
+## How this maps to the assignment brief
+
+For an evaluator checking requirements against implementation directly:
+
+| Brief section | Where it's satisfied |
+|---|---|
+| 3.1 API, sessions, persistence | FastAPI (`backend/app/api/`), sessions scoped at the query level (`routes_sessions.py`), Postgres via SQLAlchemy (`db/models.py`) |
+| 3.2 Flexible LLM configuration | `LLMProvider` interface (`llm/base.py`), Ollama + OpenAI-compatible adapters, one env var toggle -- see [Switching models](#switching-models) |
+| 3.3 Knowledge base | 303-episode corpus, chunked on speaker turns, embedded, indexed (pgvector HNSW + Postgres FTS) -- see [architecture.md#ingestion-and-retrieval-flow](docs/architecture.md#ingestion-and-retrieval-flow) |
+| 4.1 Grounded conversational assistant | Hybrid retrieval + hard grounding floor + forced-retrieval and ungrounded guards -- see [architecture.md#agent-layer](docs/architecture.md#agent-layer) |
+| 4.2 Ship 30 for 30 skill | `backend/app/skills/ship30/` -- principles as data, outline→draft→rubric→revise pipeline |
+| 4.3 Artifact generation + viewer | `create_artifact` tool + `ArtifactViewer.tsx`, sandboxed rendering -- see [architecture.md#security](docs/architecture.md#security) |
+| 5. Deployment & operational readiness | One-command `docker compose up`, `.env.example`, structured logs, `/health/deep`, this README's [Troubleshooting](#troubleshooting) |
+| 6.1 Public GitHub repository | This repository |
+| 6.2 README.md | This file |
+| 6.3 PRD | [docs/PRD.md](docs/PRD.md) |
+| 6.4 design.md | [docs/design.md](docs/design.md) |
+| 6.5 architecture.md | [docs/architecture.md](docs/architecture.md) |
+| 6.6 Agent transcripts | [agent-transcripts/](agent-transcripts/) -- 10 entries, including 3 real defects found and fixed by running the system live against the required local model |
+| 6.7 Tests | 94 automated tests -- see [Testing](#testing) -- plus [docs/test-plan.md](docs/test-plan.md) |
+| 6.8 Demo video | Not part of this repository; recorded separately per the submission instructions |
 
 ---
 

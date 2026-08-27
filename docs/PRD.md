@@ -175,7 +175,7 @@ disclosure of anything that was stripped.
 | 9 | Artifacts render in-app, not as raw code | Met |
 | 10 | Generated HTML treated as untrusted | Met — two independent layers |
 | 11 | Graceful handling of missing keys, dead Ollama, timeouts, empty retrieval, DB loss | Met — typed errors with actionable hints |
-| 12 | Meaningful automated tests | Met — 56 passing |
+| 12 | Meaningful automated tests | Met — 94 passing |
 | 13 | No secrets committed | Met |
 
 ---
@@ -188,6 +188,7 @@ disclosure of anything that was stripped.
 | 1 | Schema, retrieval, provider abstraction, agent loop, skills, API | Backend exercisable by `curl` before any UI |
 | 2 | Chat UI, artifact viewer, states | — |
 | 3 | Tests, docs, fresh-clone verification, demo | — |
+| 4 | Ran every core flow live against the real required model through the real UI, not just against unit tests | Found and fixed 3 further real defects (artifact routing, conflicting tool instructions + a literal placeholder in essay citations, and a bookkeeping bug that silently doubled the cost of every successful essay/artifact) — full account in `agent-transcripts/07`–`09` |
 
 **What de-risking first bought.** Three defects surfaced in phase 0 that would
 have been expensive later:

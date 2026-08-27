@@ -3,6 +3,7 @@
 ## Contents
 
 - [System overview](#system-overview)
+- [A request, end to end](#a-request-end-to-end)
 - [Database schema](#database-schema)
 - [Ingestion and retrieval flow](#ingestion-and-retrieval-flow)
 - [Agent layer](#agent-layer)
@@ -27,6 +28,77 @@ Next.js (3000) ──▶ FastAPI (8000) ──▶ Postgres + pgvector (5432)
 The frontend never talks to Postgres, Ollama, or the cloud provider directly —
 every external dependency is mediated by the FastAPI backend, which is the only
 place credentials or connection strings exist.
+
+---
+
+## A request, end to end
+
+Concrete trace of "What does Adam Fishman say about onboarding?", captured
+live against the running system, to make the pieces above tangible rather than
+abstract.
+
+```
+1. Browser                POST /api/sessions/{id}/chat  {"message": "..."}
+
+2. routes_chat.py          - loads prior user/assistant turns for THIS session
+                              only (tool messages excluded from replay)
+                            - persists the user message immediately, commits
+                              (so a later model failure doesn't lose the turn)
+                            - calls run_agent()
+
+3. agent/runtime.py         - builds [system prompt, ...history, user message]
+                            - calls chat_with_fallback(messages, tools=3 specs)
+
+4. llm/registry.py          - resolves the active provider from settings
+                              (LLM_PROVIDER=ollama) -> OllamaProvider
+                            - forwards the call; on LLMUnavailableError/
+                              LLMTimeoutError, would retry on
+                              LLM_FALLBACK_PROVIDER if one is configured
+
+5. llm/ollama.py             POST http://host.docker.internal:11434/api/chat
+                              (host Ollama, model llama3.2:3b)
+                            - model returns a tool_calls array naming
+                              search_transcripts (verified structured, not
+                              text -- see the salvage-parser note below)
+
+6. agent/tools.py             _tool_search_transcripts()
+                            -> rag/retriever.py: hybrid search
+                               (pgvector cosine + Postgres tsvector, RRF-fused)
+                            - best_similarity 0.77, well above the 0.55 floor
+                              -> ctx.grounded = True, 8 chunks returned with
+                                 guest/episode/timestamp attached
+                            - tool result appended to the conversation
+
+7. agent/runtime.py (loop)   - model called a tool, so the loop continues
+                            - second chat_with_fallback() call, now with the
+                              8 numbered excerpts in context
+                            - model returns a final answer, no more tool
+                              calls -> forced-retrieval and ungrounded guards
+                              both see ctx.searched=True, ctx.grounded=True,
+                              so the answer is accepted as-is
+
+8. routes_chat.py           - persists the assistant message: content,
+                              provider="ollama", model="llama3.2:3b",
+                              citations (8 entries with real YouTube
+                              timestamps), latency_ms
+                            - no artifact this turn -> nothing added to the
+                              artifacts table
+                            - returns ChatResponse to the browser
+
+9. Browser                  - renders the answer, a collapsed "8 sources"
+                              disclosure, and the model/latency footer
+```
+
+Measured on this trace: retrieval took 374ms; the two Ollama calls together
+took most of the turn's ~23s total, which is the CPU-bound cost of local
+3B-model inference, not the retrieval or persistence layers.
+
+The essay and artifact paths follow the same shape through steps 1-4 and
+diverge at step 6: `write_ship30_essay` runs its own internal
+outline-draft-rubric-revise pipeline (several more `chat_with_fallback` calls)
+before returning, and `create_artifact` sanitises its content
+(`security/sanitize.py`) before registering it — both described in
+[Agent layer](#agent-layer) below.
 
 ---
 
@@ -239,6 +311,27 @@ the generic citation-count check, and by rewording both prompts to give a
 concrete example instead of a symbolic placeholder. Full account in
 [agent-transcripts/08-conflicting-tool-instructions-and-a-literal-placeholder.md](../agent-transcripts/08-conflicting-tool-instructions-and-a-literal-placeholder.md).
 
+**The most expensive defect found in this build.** Both `write_ship30_essay`
+and `create_artifact` set `ctx.grounded` on success but, in the version that
+shipped for most of the build, neither set `ctx.searched`. The forced-retrieval
+guard above has no other way to know grounding already happened, so after
+*every single successful artifact or essay*, it fired anyway — telling a model
+that had just spent up to six minutes producing a correct, grounded essay that
+it needed to search before answering. On `llama3.2:3b` this reliably sent the
+model into regenerating the entire essay pipeline a second time,
+unconditionally, on every success. Caught by re-running the exact same request
+live a second time after an unrelated fix and noticing it took just as long as
+the first attempt instead of failing fast; confirmed by killing the
+concurrently-running ingestion job to rule out CPU contention as the cause,
+and only then finding the real bug. Verified with a deliberate revert: six
+tests (later, a further two for the `create_artifact` variant of the same
+bug) fail without `ctx.searched = True` set in both tool wrappers, confirming
+the tests actually exercise the defect rather than passing regardless. Fixed,
+the same live request dropped from 6+ minutes (essay) and from hitting the
+5-iteration cap outright (a plain HTML artifact) down to 62 seconds. Full
+account in
+[agent-transcripts/09-the-most-expensive-bug-essay-success-triggered-a-re-search.md](../agent-transcripts/09-the-most-expensive-bug-essay-success-triggered-a-re-search.md).
+
 **Ollama-specific reliability note.** Small quantised models sometimes emit a
 well-formed tool call as plain text in the content field rather than populating
 the structured `tool_calls` array. `OllamaProvider._salvage_tool_call` recovers
@@ -395,3 +488,34 @@ error for every ingestion attempt, queryable directly from Postgres.
 `GET /health/deep` is the single request that answers "what, specifically, is
 broken" — database, each configured LLM provider, and knowledge-base readiness
 are reported independently, so a failure localises without reading logs at all.
+
+---
+
+## Testing strategy
+
+94 automated tests, split by what they need to be honest:
+
+| Suite | What it covers | Needs |
+|---|---|---|
+| `test_chunking.py` | Frontmatter parsing, speaker-turn extraction, sponsor detection, token budgeting | Nothing — pure functions, run against real corpus files during development |
+| `test_sanitize.py` | 25 cases: every XSS/exfiltration vector attempted against the artifact sanitiser, plus false-positive checks | Nothing |
+| `test_ship30_skill.py` | Rubric scoring and revision-instruction generation, including the literal-`[n]`-placeholder regression | Nothing |
+| `test_agent_routing.py` | The three deterministic guards (forced-retrieval, ungrounded, forced-artifact) and the artifact-reminder mechanism, via a scripted `FakeProvider` | Nothing — no live model, so these run in well under a second and are fully deterministic |
+| `test_sessions.py` | Session isolation, cascade deletes, FK behaviour | Real Postgres (schema is Postgres-specific: JSONB, generated columns) |
+| `test_retriever.py` | Hybrid RRF fusion, grounding-guard thresholds, sponsor exclusion, citation formatting | Real Postgres + real embeddings (pgvector-specific SQL) |
+
+Database-backed suites skip with a clear reason (`requires_db` in
+`conftest.py`) when no test database is reachable, rather than failing — so
+`pytest` stays useful on a bare checkout before `docker compose up` has ever
+run.
+
+**What the suite deliberately does not do:** exercise a live model. Every
+routing test scripts the model's responses (`FakeProvider`), because a test
+that calls a real LLM is slow, non-deterministic, and expensive to run in CI.
+That is a real trade-off, not a free lunch — three of the most consequential
+defects in this build (documented in `agent-transcripts/07`, `08`, `09`) were
+invisible to this exact test suite precisely because it scripts what the model
+does rather than asking what the model actually does. Each was found only by
+running the real pipeline against the real required model through the real
+UI, then written back as both a permanent regression test *and* a documented
+incident — the suite's blind spot is named, not hidden.
