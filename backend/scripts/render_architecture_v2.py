@@ -16,7 +16,7 @@ import os
 
 from PIL import Image, ImageDraw, ImageFont
 
-W, H = 1720, 1370
+W, H = 1720, 1470
 
 BG = (250, 247, 237)  # warm cream, matching the reference
 INK = (35, 35, 40)
@@ -162,7 +162,7 @@ def main():
     )
     ctext(d, (W - 40, 30), "LENNY GROWTH ASSISTANT \u2014 V1 ARCHITECTURE", F_HDR_TAG, RED, anchor="rm")
     ctext(d, (W - 40, 50), "ADR-0001 \u00b7 status: shipped", F_META, INK_MUTED, anchor="rm")
-    ctext(d, (W - 40, 68), "2026-08-27", F_META, INK_MUTED, anchor="rm")
+    ctext(d, (W - 40, 68), "2026-08-28", F_META, INK_MUTED, anchor="rm")
 
     ctext(
         d, (W / 2, 112),
@@ -210,28 +210,30 @@ def main():
     )
     arrow(d, (570, 400), (608, 400))
 
-    guardrail = (150, 500, 830, 590)
+    guardrail = (150, 500, 830, 625)
     rrect(d, guardrail, 8, fill=WHITE, outline=RED, width=2)
     _dashed_rect_outline(d, guardrail, RED, 2, dash_len=6, gap_len=4)
-    ctext(d, (170, 518), "Guardrail (x3, one nudge each, then accept)", F_BOX_TITLE, RED, anchor="lm")
+    ctext(d, (170, 518), "Guardrails (5, deterministic -- not left to the prompt)", F_BOX_TITLE, RED, anchor="lm")
     wrap_and_draw_left(
         d, (170, 540),
         "not searched yet -> force search  \u00b7  searched but ungrounded -> admit the gap  \u00b7  "
-        "document asked for but no artifact -> force create_artifact",
+        "document asked for but no artifact -> force create_artifact  \u00b7  create_artifact before any "
+        "search -> BLOCKED, forced to search first (closes a real hallucination path)  \u00b7  second "
+        "artifact/essay same turn -> BLOCKED (redundant)  \u00b7  trivial message -> no tools offered at all",
         F_BOX_MONO, INK_SOFT, 640, 17,
     )
     elbow(d, (500, 470), (500, 500), via="v")
 
-    reply = (300, 630, 700, 700)
+    reply = (300, 655, 700, 725)
     note_box(
         d, reply, "Chat reply",
         ["+ citations (episode, guest, timestamp)", "+ artifact (if any), persisted"],
         INK, fill=WHITE,
     )
-    elbow(d, (500, 590), (500, 630), via="v")
+    elbow(d, (500, 625), (500, 655), via="v")
 
     ctext(
-        d, (500, 740),
+        d, (500, 745),
         "measured live: retrieval ~0.1s \u00b7 llama3.2:3b inference is the cost (~20-160s, CPU-only)",
         F_SMALL_MONO, INK_MUTED, anchor="mm",
     )
@@ -401,16 +403,24 @@ def main():
     fix_y = wrap_and_draw_left(
         d, (55, fix_y),
         "A RAG assistant that only demos well on the questions you happened to try isn't trustworthy on the "
-        "ones you didn't. The eval harness above turns \u201cit seems grounded\u201d into a measured number \u2014 and it "
-        "caught a real defect on its first run: an eyeballed similarity floor (0.55) let 80% of out-of-domain "
-        "questions ground as fact. Fixed by measuring the actual score gap (0.71\u20130.81 in-domain vs. "
-        "0.54\u20130.66 out-of-domain) and moving the floor into it (0.69), instead of guessing again.",
+        "ones you didn't. BENCH turns \u201cit seems grounded\u201d into a measured number \u2014 and caught a real "
+        "defect on its first run: an eyeballed similarity floor (0.55) let 80% of out-of-domain questions "
+        "ground as fact. Fixed by measuring the actual score gap (0.71\u20130.81 in-domain vs. 0.54\u20130.66 "
+        "out-of-domain) and moving the floor into it (0.69), instead of guessing again.",
+        F_BODY, INK_SOFT, W - 110, 23,
+    )
+    fix_y = wrap_and_draw_left(
+        d, (55, fix_y + 6),
+        "A second, sibling harness drives the real agent loop (not just retrieval) against the real model, "
+        "and found two live hallucinations on its first run: asked for a sourdough recipe or checklist, the "
+        "model skipped search entirely and called create_artifact directly \u2014 rendering fabricated content "
+        "as a legitimate document. Closed by intercepting that tool call until the turn has actually searched.",
         F_BODY, INK_SOFT, W - 110, 23,
     )
     wrap_and_draw_left(
         d, (55, fix_y + 6),
         "Built on: hybrid retrieval (pgvector cosine + Postgres full-text, fused with RRF), a provider-agnostic "
-        "LLM interface (Ollama today, any OpenAI-compatible cloud with one env var), and three deterministic "
+        "LLM interface (Ollama today, any OpenAI-compatible cloud with one env var), and five deterministic "
         "guards that turn \u201cthe prompt says to search first\u201d from a probability into a guarantee on a 3B local model.",
         F_BODY, INK_SOFT, W - 110, 23,
     )
