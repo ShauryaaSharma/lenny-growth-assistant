@@ -1,0 +1,29 @@
+# --- Web / API ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.0
+python-multipart==0.0.20
+
+# --- Database ---
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.14.0
+pgvector==0.3.6
+greenlet==3.1.1
+
+# --- LLM / HTTP ---
+httpx==0.28.1
+tenacity==9.0.0
+
+# --- Retrieval ---
+# fastembed runs ONNX on CPU: ~10x smaller install than torch+sentence-transformers
+# and materially faster on a CPU-only machine, which is our target environment.
+fastembed==0.5.1
+pyyaml==6.0.2
+
+# --- Security ---
+nh3==0.2.20
+
+# --- Observability ---
+structlog==24.4.0

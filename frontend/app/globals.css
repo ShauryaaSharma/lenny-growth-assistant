@@ -1,0 +1,130 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #__next {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-surface-sunken text-ink antialiased;
+  }
+
+  /* Visible focus for keyboard users on every interactive element. Removing
+     this would fail the accessibility bar we set out in docs/design.md. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-accent-ring ring-offset-2 ring-offset-surface;
+  }
+}
+
+@layer components {
+  /* Typography for rendered markdown, in chat and in artifacts. Written by hand
+     rather than pulling in @tailwindcss/typography, which is a large dependency
+     for the handful of elements the model actually emits. */
+  .prose-chat,
+  .prose-artifact {
+    @apply text-[15px] leading-relaxed text-ink-soft;
+  }
+
+  .prose-chat > * + *,
+  .prose-artifact > * + * {
+    @apply mt-3;
+  }
+
+  .prose-chat h1,
+  .prose-artifact h1 {
+    @apply mt-6 text-xl font-semibold text-ink;
+  }
+
+  .prose-chat h2,
+  .prose-artifact h2 {
+    @apply mt-6 text-lg font-semibold text-ink;
+  }
+
+  .prose-chat h3,
+  .prose-artifact h3 {
+    @apply mt-5 text-base font-semibold text-ink;
+  }
+
+  .prose-chat strong,
+  .prose-artifact strong {
+    @apply font-semibold text-ink;
+  }
+
+  .prose-chat ul,
+  .prose-artifact ul {
+    @apply list-disc space-y-1 pl-5;
+  }
+
+  .prose-chat ol,
+  .prose-artifact ol {
+    @apply list-decimal space-y-1 pl-5;
+  }
+
+  .prose-chat a,
+  .prose-artifact a {
+    @apply text-accent underline underline-offset-2;
+  }
+
+  .prose-chat blockquote,
+  .prose-artifact blockquote {
+    @apply border-l-2 border-gray-300 pl-4 italic;
+  }
+
+  .prose-chat code,
+  .prose-artifact code {
+    @apply rounded bg-surface-raised px-1 py-0.5 font-mono text-[13px];
+  }
+
+  .prose-chat pre,
+  .prose-artifact pre {
+    @apply overflow-x-auto rounded-lg bg-ink p-4 text-[13px] text-gray-100;
+  }
+
+  .prose-chat pre code,
+  .prose-artifact pre code {
+    @apply bg-transparent p-0 text-inherit;
+  }
+
+  .prose-artifact table {
+    @apply w-full border-collapse text-sm;
+  }
+
+  .prose-artifact th,
+  .prose-artifact td {
+    @apply border border-gray-200 px-3 py-2 text-left;
+  }
+
+  .prose-artifact th {
+    @apply bg-surface-raised font-semibold text-ink;
+  }
+}
+
+/* Three-dot "thinking" indicator. Local models on CPU can take 30s+, so the
+   wait needs to look deliberate rather than broken. */
+@keyframes pulse-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+.dot {
+  animation: pulse-dot 1.2s infinite ease-in-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dot {
+    animation: none;
+    opacity: 0.6;
+  }
+}

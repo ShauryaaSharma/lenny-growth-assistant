@@ -1,0 +1,69 @@
+# The Lenny Growth Assistant — one-command startup.
+#
+#   cp .env.example .env && docker compose up --build
+#
+# Brings up Postgres+pgvector, the FastAPI backend (which runs migrations and
+# seeds the knowledge base on first boot), and the Next.js frontend.
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: lenny-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lenny}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lenny_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-lenny}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Without this gate the backend races the DB and crash-loops on first boot.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lenny} -d ${POSTGRES_DB:-lenny}"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    build:
+      context: ./backend
+    container_name: lenny-backend
+    env_file: .env
+    environment:
+      # Compose-internal hostname always wins over whatever .env says, so the
+      # same .env works whether you run the API in Docker or on the host.
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-lenny}:${POSTGRES_PASSWORD:-lenny_dev_password}@postgres:5432/${POSTGRES_DB:-lenny}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - transcripts:/data
+      - hfcache:/root/.cache/huggingface
+    extra_hosts:
+      # Lets the container reach Ollama running natively on the host.
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+    container_name: lenny-frontend
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  transcripts:
+  hfcache:
