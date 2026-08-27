@@ -51,10 +51,17 @@ class Settings(BaseSettings):
     # Must be on a mounted volume; fastembed ignores the HF cache path.
     embedding_cache_dir: str = "/data/models"
     retrieval_top_k: int = 8
-    # Absolute cosine-similarity floor for the grounding guard. Tuned for
-    # bge-small-en-v1.5; raise it to make the assistant more willing to
-    # decline, lower it to make it more willing to stretch.
-    retrieval_min_similarity: float = 0.55
+    # Absolute cosine-similarity floor for the grounding guard, for
+    # bge-small-en-v1.5. Measured, not guessed: `python -m app.evals.run_eval`
+    # against the golden set found the original hand-picked value of 0.55 let
+    # 80% of out-of-domain questions ("sourdough starter recipe", "explain
+    # general relativity") incorrectly ground, because bge-small's cosine
+    # similarity clusters conversational English text more tightly than a
+    # single eyeballed threshold accounted for. In-domain questions on this
+    # corpus measured 0.71-0.81; out-of-domain measured 0.54-0.66 -- a clean
+    # ~0.05 gap. 0.69 sits in that gap with margin on both sides. Re-run the
+    # eval after any change to the embedding model, chunk size, or this value.
+    retrieval_min_similarity: float = 0.69
     chunk_target_tokens: int = 400
     chunk_overlap_tokens: int = 80
 

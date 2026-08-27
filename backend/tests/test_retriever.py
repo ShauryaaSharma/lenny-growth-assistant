@@ -178,7 +178,11 @@ class TestHybridFusion:
         )
         await db.commit()
 
-        result = await search(db, "balancing velocity and stability while scaling")
+        # Close to the chunk's own wording -- this test is about citation
+        # degradation (no youtube_url), not about stress-testing paraphrase
+        # matching against a single synthetic chunk with no supporting
+        # corpus redundancy behind it.
+        result = await search(db, "balancing product velocity against organizational stability")
         assert result.grounded is True
         citation = result.chunks[0].as_citation()
         assert citation["url"] == ""

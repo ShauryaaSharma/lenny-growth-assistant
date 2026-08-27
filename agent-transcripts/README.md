@@ -118,6 +118,18 @@ behaviour rather than just structure.
    with ingestion paused for a clean signal: one essay generation, coherent
    description, real citations. See
    [09-the-most-expensive-bug-essay-success-triggered-a-re-search.md](09-the-most-expensive-bug-essay-success-triggered-a-re-search.md).
+9. Asked directly why there was no LLMOps evaluation harness, despite the PRD
+   naming a specific success metric (Grounded Answer Rate >= 80%) and
+   guardrail (0% false-ground on out-of-domain questions) that nothing had
+   ever actually measured. Built one (`backend/app/evals/`, a 24-question
+   golden set scored against the real retriever). The first run found a real
+   defect on the first try: 80% of out-of-domain questions were incorrectly
+   grounding at the hand-picked `RETRIEVAL_MIN_SIMILARITY=0.55`. Fixed by
+   measuring the actual score separation between in-domain (0.71-0.81) and
+   out-of-domain (0.54-0.66) questions and setting the floor (0.69) in the gap
+   between them — replacing a guess with a number that has evidence behind
+   it. See
+   [10-eval-harness-caught-a-real-grounding-defect.md](10-eval-harness-caught-a-real-grounding-defect.md).
 
 ## What this log is trying to demonstrate
 

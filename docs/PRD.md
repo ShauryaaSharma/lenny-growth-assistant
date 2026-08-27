@@ -55,6 +55,14 @@ citation, where the top retrieved passage clears the similarity floor.
   improved by lowering the floor.
 - Instrumented today: every turn logs `grounded`, `best_similarity`, and the
   tools used; every assistant message persists its citations.
+- **Actually measured**, not just logged: `python -m app.evals.run_eval` runs
+  a 24-question labeled golden set (14 in-domain, 10 out-of-domain) against
+  the real retriever and reports both numbers directly. The first run found a
+  real violation of the guardrail above — 80% false-ground rate at an
+  under-tuned similarity floor — fixed by replacing a hand-picked threshold
+  with one measured against labeled data. See
+  [docs/architecture.md#evaluation](architecture.md#evaluation) and
+  `agent-transcripts/10`.
 
 **Secondary — Time to Confident Answer.**
 Median seconds from question to an answer the user does not need to verify
@@ -175,7 +183,7 @@ disclosure of anything that was stripped.
 | 9 | Artifacts render in-app, not as raw code | Met |
 | 10 | Generated HTML treated as untrusted | Met — two independent layers |
 | 11 | Graceful handling of missing keys, dead Ollama, timeouts, empty retrieval, DB loss | Met — typed errors with actionable hints |
-| 12 | Meaningful automated tests | Met — 94 passing |
+| 12 | Meaningful automated tests | Met — 106 passing |
 | 13 | No secrets committed | Met |
 
 ---

@@ -11,6 +11,8 @@
 - [Security](#security)
 - [Deployment topology](#deployment-topology)
 - [Observability](#observability)
+- [Testing strategy](#testing-strategy)
+- [Evaluation](#evaluation)
 
 ---
 
@@ -64,7 +66,7 @@ abstract.
 6. agent/tools.py             _tool_search_transcripts()
                             -> rag/retriever.py: hybrid search
                                (pgvector cosine + Postgres tsvector, RRF-fused)
-                            - best_similarity 0.77, well above the 0.55 floor
+                            - best_similarity 0.77, well above the 0.69 floor
                               -> ctx.grounded = True, 8 chunks returned with
                                  guest/episode/timestamp attached
                             - tool result appended to the conversation
@@ -493,7 +495,7 @@ are reported independently, so a failure localises without reading logs at all.
 
 ## Testing strategy
 
-94 automated tests, split by what they need to be honest:
+106 automated tests, split by what they need to be honest:
 
 | Suite | What it covers | Needs |
 |---|---|---|
@@ -519,3 +521,71 @@ does rather than asking what the model actually does. Each was found only by
 running the real pipeline against the real required model through the real
 UI, then written back as both a permanent regression test *and* a documented
 incident — the suite's blind spot is named, not hidden.
+
+---
+
+## Evaluation
+
+Tests verify the code does what it was told. Evaluation verifies the *system*
+does what the PRD promised — a different question, answered against real
+questions and the real embedded corpus rather than scripted inputs.
+
+```
+backend/app/evals/
+├── golden_set.py   # 24 labeled questions: 14 in-domain (7 naming a guest
+│                     confirmed in the corpus, 7 broad topic questions),
+│                     10 out-of-domain (deliberately unrelated to product,
+│                     growth, or company-building)
+└── run_eval.py     # runs rag.retriever.search() -- no model, no agent loop
+                      -- against every question and scores the result
+```
+
+```bash
+docker compose exec backend python -m app.evals.run_eval
+```
+
+Reports, and fails the run (non-zero exit, CI-ready) if either is violated:
+
+| Metric | What it measures | PRD threshold |
+|---|---|---|
+| Grounded Answer Rate | % of in-domain questions the retriever grounds | ≥ 80% |
+| False-Ground Rate | % of out-of-domain questions that incorrectly ground | 0% |
+| Guest-match precision | For questions naming an expected guest, does that guest's episode surface in the top results | informational |
+| Retrieval latency (p50/p95) | Cost of the one layer this harness can measure without a slow local model in the loop | informational |
+
+**Why this exists, and why it wasn't there from the start.** The PRD states
+both thresholds above as this project's actual success metric and guardrail.
+For most of the build, nothing measured them — the code logged the fields
+needed to (`grounded`, `best_similarity` on every turn) but no script ever ran
+a fixed, labeled sample and reported the real numbers. Tests were mistaken for
+evaluation, which they are not: `tests/test_agent_routing.py` proves the agent
+loop's guards behave correctly *given a scripted model response*; it says
+nothing about whether the actual retriever, on the actual corpus, actually
+grounds correctly. This gap was pointed out directly rather than found by
+accident, and closing it took under an hour to build.
+
+**It found a real defect on the first run.** `RETRIEVAL_MIN_SIMILARITY` had
+been set to `0.55` by eyeballing a handful of live queries during development
+-- reasonable-looking, never checked against labeled data. The first eval run
+reported an 80% False-Ground Rate: eight of ten out-of-domain questions
+("what's the best sourdough starter recipe?", "explain general relativity")
+incorrectly cleared the floor and would have been answered as if the corpus
+supported them, directly violating the PRD's stated guardrail. Printing the
+actual similarity scores showed why: in-domain questions on this corpus
+measured 0.71-0.81, out-of-domain measured 0.54-0.66 -- a clean ~0.05 gap the
+original guess sat on the wrong side of. The floor was moved to `0.69`
+(documented with this data in the `config.py` comment on the setting), and a
+re-run confirmed 100% Grounded Answer Rate / 0% False-Ground Rate. Full
+account, including the one existing test whose weak synthetic fixture needed
+tightening at the new stricter threshold, in
+[agent-transcripts/10-eval-harness-caught-a-real-grounding-defect.md](../agent-transcripts/10-eval-harness-caught-a-real-grounding-defect.md).
+
+**What this still does not cover.** The eval harness scores retrieval, not the
+full agent turn -- it does not verify the model actually refuses correctly
+when told to, or that a citation's claim is faithful to its source passage
+rather than merely valid-in-range. Those remain covered by
+`tests/test_agent_routing.py` (scripted) and the manual test plan
+(`docs/test-plan.md`, live) respectively. A natural next step neither budget
+nor scope covered here: an LLM-as-judge pass scoring citation faithfulness on
+a sample of real live answers, and expanding the golden set past 24 questions
+as more edge cases are found in production.
