@@ -197,6 +197,7 @@ system prompt + history + user message
               │
               ├─ substantive question, never searched? ──▶ force-search nudge, loop once
               ├─ searched but ungrounded? ──▶ ungrounded guard, loop once
+              ├─ document request, no artifact created? ──▶ force-artifact nudge, loop once
               └─ otherwise: accept and return
 ```
 
@@ -204,13 +205,22 @@ Bounded at `MAX_ITERATIONS = 5`; if the model still hasn't converged, a final
 no-tools turn asks it to answer in plain prose from whatever it has, so the
 user never sees an empty response.
 
-**Why two deterministic guards rather than trusting the system prompt:** on a
-3B model, "the prompt tells it to always search first" is not reliable — it is
-probabilistic. The forced-retrieval nudge and the ungrounded guard turn a
-should into a must: a substantive answer cannot be produced without having
-searched, and a search that came back empty cannot be silently overridden by
-the model's own knowledge. This is the mechanism behind the PRD's "0% of
-out-of-domain questions answered without evidence" guardrail.
+**Why three deterministic guards rather than trusting the system prompt:** on a
+3B model, "the prompt tells it to always search first" (or "always render a
+document as an artifact") is not reliable — it is probabilistic. Each guard
+turns a should into a must. The forced-retrieval and ungrounded guards are the
+mechanism behind the PRD's "0% of out-of-domain questions answered without
+evidence" guardrail. The forced-artifact guard exists because of a defect
+found live, not hypothetically: asked for "a one-page onboarding audit
+checklist," `llama3.2:3b` searched correctly, then wrote the checklist as a
+plain chat message instead of calling `create_artifact`. `wants_artifact()` in
+`app/agent/prompts.py` matches a conservative keyword list against the user's
+message, and the guard fires only when the answer was actually groundable —
+never coercing an artifact out of an honest refusal. Full account, including a
+second bug this fix surfaced (an ungrounded refusal was mislabeling itself as
+`grounded: true` in the API response, by reusing that field as loop
+bookkeeping) in
+[agent-transcripts/07-artifact-routing-caught-by-manual-browser-testing.md](../agent-transcripts/07-artifact-routing-caught-by-manual-browser-testing.md).
 
 **Ollama-specific reliability note.** Small quantised models sometimes emit a
 well-formed tool call as plain text in the content field rather than populating

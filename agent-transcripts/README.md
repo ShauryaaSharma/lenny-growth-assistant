@@ -89,6 +89,15 @@ behaviour rather than just structure.
    against a real Postgres instance rather than mocks, which caught a real
    SQLAlchemy async identity-map staleness bug in the *test* itself — see
    [06-sqlalchemy-identity-map-staleness-in-tests.md](06-sqlalchemy-identity-map-staleness-in-tests.md).
+6. Per this project's own standing rule ("use the feature in a browser before
+   reporting the task complete"), tested artifact creation live against the
+   real `llama3.2:3b` model through the real UI rather than trusting that
+   passing unit tests meant the feature worked — and it didn't: the model
+   searched correctly but answered a document request in chat prose instead of
+   calling `create_artifact`. Fixing it surfaced a second, independent bug
+   where an honest refusal was being mislabeled as a grounded answer. Both
+   fixed, both covered by new tests, both re-verified live in the browser — see
+   [07-artifact-routing-caught-by-manual-browser-testing.md](07-artifact-routing-caught-by-manual-browser-testing.md).
 
 ## What this log is trying to demonstrate
 

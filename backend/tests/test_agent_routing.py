@@ -145,6 +145,9 @@ class TestUngroundedGuard:
         result = await run_agent(None, uuid.uuid4(), "How do I bake sourdough?", [])
         assert "don't cover" in result.content
         assert result.citations == []
+        # Regression: the guard must not report a refusal as a grounded answer
+        # by reusing ctx.grounded as its own "already fired" flag.
+        assert result.grounded is False
 
     async def test_search_tool_returns_an_explicit_refusal_instruction(
         self, monkeypatch, empty_search
@@ -158,6 +161,92 @@ class TestUngroundedGuard:
         assert out["results"] == []
         assert "do not answer" in out["instruction"].lower()
         assert ctx.grounded is False
+
+
+class TestForcedArtifactCreation:
+    """Guards against the failure observed live on llama3.2:3b: asked for "a
+    one-page onboarding audit checklist," it searched correctly, then wrote the
+    checklist as a plain chat message instead of calling create_artifact."""
+
+    async def test_document_request_answered_in_prose_is_corrected(
+        self, monkeypatch, grounded_search
+    ):
+        provider = FakeProvider(
+            [
+                tool_response("search_transcripts", query="onboarding audit"),
+                # Model answers the checklist as chat prose -- no tool call.
+                text_response("Here is a checklist:\n1. Map the signup flow\n2. ..."),
+                # After the nudge it registers a real artifact instead.
+                tool_response(
+                    "create_artifact",
+                    kind="markdown",
+                    title="Onboarding Audit Checklist",
+                    content="# Onboarding Audit Checklist\n\n- Map the signup flow",
+                ),
+                text_response("I've put together the checklist in the panel."),
+            ]
+        )
+        install_provider(monkeypatch, provider)
+
+        result = await run_agent(
+            None, uuid.uuid4(), "Build me a one-page onboarding audit checklist", []
+        )
+
+        assert len(result.artifacts) == 1
+        assert result.artifacts[0].title == "Onboarding Audit Checklist"
+        assert "panel" in result.content
+
+    async def test_nudge_fires_at_most_once(self, monkeypatch, grounded_search):
+        """A model that ignores the nudge twice must not trap the user in a loop."""
+        provider = FakeProvider(
+            [
+                tool_response("search_transcripts", query="onboarding audit"),
+                text_response("Here is a checklist in prose, still no artifact."),
+                text_response("Still no artifact after the nudge."),
+            ]
+        )
+        install_provider(monkeypatch, provider)
+
+        result = await run_agent(
+            None, uuid.uuid4(), "Build me a one-page onboarding checklist", []
+        )
+        assert result.content == "Still no artifact after the nudge."
+        assert result.artifacts == []
+
+    async def test_ungrounded_document_request_is_not_forced_into_an_artifact(
+        self, monkeypatch, empty_search
+    ):
+        """A request the corpus can't support should stay a refusal, not be
+        coerced into producing an artifact anyway."""
+        provider = FakeProvider(
+            [
+                tool_response("search_transcripts", query="sourdough checklist"),
+                text_response("Here's a sourdough checklist from general knowledge."),
+                text_response("Lenny's Podcast transcripts don't cover this topic."),
+            ]
+        )
+        install_provider(monkeypatch, provider)
+
+        result = await run_agent(
+            None, uuid.uuid4(), "Give me a one-page sourdough starter checklist", []
+        )
+        assert result.artifacts == []
+        assert "don't cover" in result.content
+
+    async def test_ordinary_questions_never_trigger_the_artifact_nudge(
+        self, monkeypatch, grounded_search
+    ):
+        provider = FakeProvider(
+            [
+                tool_response("search_transcripts", query="pmf signals"),
+                text_response("Adam Fishman argues PMF shows up as pull, not push [1]."),
+            ]
+        )
+        install_provider(monkeypatch, provider)
+
+        result = await run_agent(None, uuid.uuid4(), "What are signs of PMF?", [])
+        assert result.artifacts == []
+        assert result.content.startswith("Adam Fishman")
 
 
 class TestToolDispatch:

@@ -49,6 +49,41 @@ Tell the user that Lenny's Podcast transcripts do not cover this topic, and \
 suggest a related topic that they do cover. Do not answer the question itself."""
 
 
+# Injected once when the user clearly asked for a document but the model
+# answered in prose instead of calling create_artifact. Observed directly on
+# llama3.2:3b during manual browser testing: asked for "a one-page onboarding
+# audit checklist," it searched correctly, then wrote the checklist as a plain
+# chat message rather than registering it as an artifact -- rule 8 in the
+# system prompt was not enough on its own to make this reliable, exactly the
+# gap that FORCE_SEARCH_NUDGE exists to close for retrieval.
+FORCE_ARTIFACT_NUDGE = """The user asked for a document, not a chat answer. You \
+must call `create_artifact` now with the complete content you just described, \
+using the evidence already retrieved. Do not write the document as a plain \
+chat message."""
+
+
+# Phrases strongly indicating the user wants a rendered document rather than a
+# conversational answer. Deliberately does not include "essay"/"article" --
+# those route to write_ship30_essay instead, which has its own tool and rules.
+ARTIFACT_PATTERNS = (
+    "checklist", "one-pager", "one pager", "template", "document", "report",
+    "audit", "cheat sheet", "worksheet", "framework doc", "rendered",
+    "html page", "web page", "landing page",
+)
+
+
+def wants_artifact(message: str) -> bool:
+    """Heuristic match for an explicit document request.
+
+    Deliberately conservative (exact-phrase matching, not fuzzy) -- a false
+    positive here forces an unwanted artifact on an ordinary question, which is
+    a worse failure than occasionally missing a document request that the
+    model's own judgment would have caught anyway.
+    """
+    normalized = message.strip().lower()
+    return any(p in normalized for p in ARTIFACT_PATTERNS)
+
+
 # Messages that legitimately need no retrieval.
 TRIVIAL_PATTERNS = (
     "hi", "hey", "hello", "thanks", "thank you", "ok", "okay", "cool",
