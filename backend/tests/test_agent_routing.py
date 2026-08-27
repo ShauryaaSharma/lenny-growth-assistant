@@ -348,6 +348,51 @@ class TestArtifactCreatedReminder:
         assert reminder_count == 1
 
 
+class TestEssayCompletionDoesNotTriggerSpuriousResearch:
+    """End-to-end reproduction of the most expensive bug found live: after a
+    successful essay generation (its own internal retrieval already grounded
+    the answer), the agent loop incorrectly believed no search had happened
+    and forced a redundant search -- which then led the model to regenerate
+    the entire multi-minute essay pipeline a second time. Each essay
+    generation costs several real minutes on CPU, so this bug was not just
+    incorrect, it was the single most expensive reliability defect found in
+    the whole build."""
+
+    async def test_successful_essay_does_not_force_a_search_nudge(self, monkeypatch):
+        import app.agent.tools as tools_module
+
+        async def fake_write_essay(db, topic):
+            return {
+                "ok": True,
+                "essay": "# Retention as a Lever\n\nBody.",
+                "rubric": {"word_count": 1200, "passed": True},
+                "citations": [{"chunk_id": "x", "episode_title": "E", "guest": "G"}],
+                "revised": False,
+            }
+
+        monkeypatch.setattr(tools_module, "write_ship30_essay", fake_write_essay)
+
+        provider = FakeProvider(
+            [
+                tool_response("write_ship30_essay", topic="retention as a growth lever"),
+                # If the bug were still present, the runtime would inject
+                # FORCE_SEARCH_NUDGE here instead of accepting this reply.
+                text_response("I've written the essay on retention; it's in the panel."),
+            ]
+        )
+        install_provider(monkeypatch, provider)
+
+        result = await run_agent(
+            None, uuid.uuid4(), "Write a Ship 30 essay about retention as a growth lever", []
+        )
+
+        # Exactly one essay generation -- not two.
+        assert [t["tool"] for t in result.tool_calls] == ["write_ship30_essay"]
+        assert result.content == "I've written the essay on retention; it's in the panel."
+        final_messages = provider.calls[-1]
+        assert not any(FORCE_SEARCH_NUDGE in m.content for m in final_messages)
+
+
 class TestToolDispatch:
     async def test_unknown_tool_is_reported_not_raised(self):
         from app.agent.tools import ToolContext, execute_tool
@@ -380,6 +425,53 @@ class TestToolDispatch:
         out = await execute_tool(ctx, "create_artifact", {"kind": "markdown", "title": "x", "content": "  "})
         assert "error" in out
         assert ctx.artifacts == []
+
+    async def test_essay_tool_marks_searched_on_success(self, monkeypatch):
+        """Regression: the essay tool performs its own internal retrieval
+        (top_k=14) but never told the top-level loop that grounding had
+        happened, because it only set ctx.grounded, not ctx.searched. Observed
+        live: after a successful ~4-minute essay generation, the loop's "did
+        you search first" guard fired anyway (ctx.searched was still False),
+        forcing an unnecessary second full essay generation."""
+        import app.agent.tools as tools_module
+        from app.agent.tools import ToolContext, execute_tool
+
+        async def fake_write_essay(db, topic):
+            return {
+                "ok": True,
+                "essay": "# Title\n\nBody text.",
+                "rubric": {"word_count": 1200, "passed": True},
+                "citations": [],
+                "revised": False,
+            }
+
+        monkeypatch.setattr(tools_module, "write_ship30_essay", fake_write_essay)
+
+        ctx = ToolContext(db=None, session_id=uuid.uuid4())
+        out = await execute_tool(ctx, "write_ship30_essay", {"topic": "retention"})
+
+        assert out["ok"] is True
+        assert ctx.searched is True
+        assert ctx.grounded is True
+
+    async def test_essay_tool_marks_searched_even_when_declined(self, monkeypatch):
+        """A declined essay (insufficient evidence) still performed a real
+        retrieval attempt -- ctx.searched must be True so the ungrounded
+        guard fires next, rather than the unrelated force-search nudge."""
+        import app.agent.tools as tools_module
+        from app.agent.tools import ToolContext, execute_tool
+
+        async def fake_write_essay(db, topic):
+            return {"ok": False, "message": "not enough evidence", "citations": []}
+
+        monkeypatch.setattr(tools_module, "write_ship30_essay", fake_write_essay)
+
+        ctx = ToolContext(db=None, session_id=uuid.uuid4())
+        out = await execute_tool(ctx, "write_ship30_essay", {"topic": "sourdough starters"})
+
+        assert out["ok"] is False
+        assert ctx.searched is True
+        assert ctx.grounded is False
 
     async def test_citations_are_deduplicated_across_searches(self, monkeypatch, grounded_search):
         """Two searches that hit the same passage must not cite it twice."""

@@ -190,6 +190,15 @@ async def _tool_write_ship30_essay(ctx: ToolContext, args: dict[str, Any]) -> di
         return {"error": "topic is required"}
 
     result = await write_ship30_essay(ctx.db, topic)
+    # This tool performs its own internal retrieval (top_k=14, wider than a
+    # plain search_transcripts call). Without marking ctx.searched here, the
+    # top-level agent loop's "did you search before answering" guard cannot
+    # see that grounding already happened -- it would fire a spurious
+    # force-search nudge after a successful essay, which was observed live to
+    # send the model into regenerating the entire ~4-minute essay pipeline a
+    # second time for no reason. Set regardless of outcome: even a declined
+    # (ungrounded) essay still performed a real retrieval attempt.
+    ctx.searched = True
     if not result["ok"]:
         return {"ok": False, "message": result["message"]}
 
