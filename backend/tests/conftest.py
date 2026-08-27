@@ -18,8 +18,22 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.config import get_settings
 from app.db.models import Base
 from app.llm.base import ChatMessage, LLMProvider, LLMResponse, ProviderHealth, ToolCall, ToolSpec
+
+
+@pytest.fixture(autouse=True)
+def _trace_db_in_tmp(tmp_path, monkeypatch):
+    """Every test that exercises the agent loop writes trace spans (see
+    app/memory/trace.py). Without this, the default `/data/traces.db` path
+    resolves on Windows to a real, absolute `C:\\data\\traces.db` and tests
+    silently write real files onto the host outside the repo -- caught
+    exactly that way once. Autouse so no test has to remember to opt in."""
+    get_settings.cache_clear()
+    monkeypatch.setenv("TRACE_DB_PATH", str(tmp_path / "traces.db"))
+    yield
+    get_settings.cache_clear()
 
 TEST_DATABASE_URL = os.getenv(
     "TEST_DATABASE_URL",

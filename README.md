@@ -37,6 +37,7 @@ Runs entirely on your machine. No API key required.
 | **Artifacts** | Markdown or HTML/CSS documents rendered in a sandboxed panel beside the chat. |
 | **Sessions** | Independent conversations, persisted in Postgres with full history and provenance. |
 | **Model toggle** | Local Ollama or any OpenAI-compatible cloud endpoint, switched by one env var. |
+| **Memory** | Episodic (Postgres), procedural (a versioned principle injected into the system prompt), and execution trace (SQLite, `GET /api/sessions/{id}/trace`) -- see [architecture.md#memory](docs/architecture.md#memory). |
 
 ---
 
@@ -51,6 +52,8 @@ Runs entirely on your machine. No API key required.
 │   │   ├── api/              # FastAPI routers: chat, sessions, artifacts, health
 │   │   ├── db/                # SQLAlchemy models + async session lifecycle
 │   │   ├── llm/                # LLMProvider interface + Ollama / OpenAI-compat / registry
+│   │   ├── memory/                 # procedural.py (principles), reducers.py (pure state
+│   │   │                             merges), trace.py (SQLite execution trace store)
 │   │   ├── evals/                  # retrieval eval + agent-scenario harness
 │   │   ├── rag/                  # chunking, embeddings, hybrid retriever, ingestion CLI
 │   │   ├── schemas/                # Pydantic request/response contracts
@@ -58,7 +61,7 @@ Runs entirely on your machine. No API key required.
 │   │   ├── skills/ship30/             # principles.md (data) + skill.py (pipeline)
 │   │   ├── config.py, logging.py, main.py
 │   ├── alembic/                # one migration: the full schema
-│   ├── tests/                  # 134 tests -- see docs/architecture.md#testing-strategy
+│   ├── tests/                  # 153 tests -- see docs/architecture.md#testing-strategy
 │   └── Dockerfile, requirements*.txt
 ├── frontend/
 │   ├── app/                  # Next.js app router: layout, page, global styles
@@ -97,7 +100,7 @@ For an evaluator checking requirements against implementation directly:
 | 6.4 design.md | [docs/design.md](docs/design.md) |
 | 6.5 architecture.md | [docs/architecture.md](docs/architecture.md) |
 | 6.6 Agent transcripts | [agent-transcripts/](agent-transcripts/) -- 11 entries, including 4 real defects found and fixed by running the system live (2 of them live hallucinations caught by the agent harness) and a real grounding-threshold defect caught by the retrieval eval harness |
-| 6.7 Tests | 134 automated tests -- see [Testing](#testing) -- plus a 24-question retrieval eval harness and an 8-scenario agent harness ([Evaluation](#evaluation)) and [docs/test-plan.md](docs/test-plan.md) |
+| 6.7 Tests | 153 automated tests -- see [Testing](#testing) -- plus a 24-question retrieval eval harness and an 8-scenario agent harness ([Evaluation](#evaluation)) and [docs/test-plan.md](docs/test-plan.md) |
 | 6.8 Demo video | Not part of this repository; recorded separately per the submission instructions |
 
 ---

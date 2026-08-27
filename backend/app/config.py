@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     ingest_episode_limit: int = 0
     ingest_on_startup: bool = True
 
+    # --- Tracing ---
+    # A separate SQLite database, deliberately -- see app/memory/trace.py for
+    # why trace spans don't belong in Postgres alongside relational data.
+    trace_db_path: str = "/data/traces.db"
+
     @field_validator("cors_origins")
     @classmethod
     def _strip(cls, v: str) -> str:

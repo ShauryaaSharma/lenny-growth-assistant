@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api import routes_artifacts, routes_chat, routes_health, routes_sessions
+from app.api import routes_artifacts, routes_chat, routes_health, routes_sessions, routes_traces
 from app.config import get_settings
 from app.db.session import check_database, dispose_engine
 from app.llm.base import LLMError
@@ -202,6 +202,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_sessions.router)
     app.include_router(routes_chat.router)
     app.include_router(routes_artifacts.router)
+    app.include_router(routes_traces.router)
     return app
 
 

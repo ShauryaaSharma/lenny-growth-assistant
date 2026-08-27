@@ -380,6 +380,62 @@ small models, so the registry stays deliberately small (`backend/app/agent/tools
 | `write_ship30_essay` | Delegates to the essay pipeline; registers the result as an artifact rather than returning 1,250 words through the chat turn. |
 | `create_artifact` | Sanitises and registers a markdown/HTML document. |
 
+### Memory
+
+`backend/app/memory/` — three kinds, kept genuinely distinct rather than
+lumped under one "memory" abstraction, because they have different
+correctness requirements and belong in different stores:
+
+| Kind | What it is | Where it lives |
+|---|---|---|
+| **Episodic** — what happened | Conversation history: every message, per session | Postgres (`sessions`, `messages`) — durable, already required by 3.1 of the brief |
+| **Procedural** — how to act | Operating principles the agent follows | `memory/procedural.py` — versioned data, like `skills/ship30/principles.md` |
+| **Execution trace** — what the system did internally | One row per LLM call / tool call, with timing | A separate SQLite database (`memory/trace.py`) |
+
+**Procedural memory** is deliberately small: one principle
+(`grounding_over_fluency`) is injected into the live system prompt as a single
+terse sentence; three others (`small_surface_area`, `verify_before_trusting`,
+`operable_over_clever`) are documented alongside the code that already
+enforces them, not repeated in the prompt. Stacking four abstract paragraphs
+on top of `SYSTEM_PROMPT`'s numbered imperative rules would dilute compliance
+on a 3B model — the same lesson behind every guard in this file. The primary
+principle is not an arbitrary style choice; it restates the brief's own
+framing of what a Forward Deployed Engineer's product needs to earn: a client
+trusts a system that is honest about its limits, not one that is merely
+fluent. See the module docstring in `procedural.py` for the full reasoning.
+
+**Reducers** (`memory/reducers.py`) replace what used to be an inline
+`history[-N:]` slice with three named, independently tested pure functions:
+`reduce_history` (the sliding-window policy), `reduce_turn` (how one
+completed turn merges into history — used identically by the live agent loop
+and by the agent-harness's multi-turn scenarios, so both accumulate state the
+same way rather than each reimplementing it), and `build_agent_messages`
+(system prompt + windowed history + new message, the exact list one turn
+sees). Naming the merge rule, rather than leaving it as inline logic at the
+call site, is what makes conversation-state assembly one thing to test
+instead of an assumption several call sites each make independently.
+
+**Why episodic memory isn't also duplicated into the trace database.**
+Postgres already durably stores every message, scoped by session — that
+requirement was met from the start (`db/models.Message`,
+`routes_chat._load_history`). Writing the same history into a second database
+would create two sources of truth for one fact with no way to guarantee they
+agree, for no benefit. The separate SQLite store earns its keep for a
+different kind of data instead — see the trace store below, which has no such
+consistency requirement to violate.
+
+**The trace store** records a span per LLM call and per tool call (including
+*blocked* ones — the ungrounded-artifact and redundant-artifact guards are
+themselves trace events, not just log lines), grouped by `session_id` and a
+per-turn `request_id`. Retrieved via `GET /api/sessions/{id}/trace`. Writes
+happen off the event loop (`asyncio.to_thread`, `sqlite3` is synchronous) and
+swallow their own errors — a broken trace write is an operability annoyance,
+never a reason a chat turn should fail. This is the concrete implementation of
+the brief's Section 5 observability requirement ("enough visibility to
+diagnose model, retrieval, database, and artifact-rendering failures") at the
+execution-graph level, one layer more granular than the structured stdout
+logs `app.logging` already provides.
+
 ### The Ship 30 skill pipeline
 
 ```
@@ -419,6 +475,7 @@ asked for 1,250. This does, and it fixes it.
 | GET | `/api/artifacts?session_id=` | List artifacts, optionally scoped to a session. |
 | GET | `/api/artifacts/{id}` | Fetch one artifact's full sanitised content. |
 | POST | `/api/search` | Retrieval only, no model in the loop — isolates "is this a retrieval problem or a model problem?" in one request. |
+| GET | `/api/sessions/{id}/trace` | Execution trace: every LLM/tool span for the session, or one turn if `?request_id=` is given — see [Memory](#memory). |
 
 Every error response shares one envelope:
 

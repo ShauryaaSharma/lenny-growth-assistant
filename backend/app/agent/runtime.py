@@ -65,11 +65,21 @@ from app.agent.tools import TOOL_SPECS, PendingArtifact, ToolContext, execute_to
 from app.llm.base import ChatMessage, LLMError
 from app.llm.registry import chat_with_fallback
 from app.logging import get_logger
+from app.memory import trace
+from app.memory.procedural import render_primary_for_system_prompt
+from app.memory.reducers import build_agent_messages
 
 log = get_logger(__name__)
 
 MAX_ITERATIONS = 5
 MAX_HISTORY_MESSAGES = 20  # sliding window; keeps small models inside their context
+
+# The one procedural-memory line that actually changes model behaviour
+# (grounding over fluency) is prepended to the system prompt every model
+# sees. The rest of PROCEDURAL_MEMORY documents principles already enforced
+# in code (small tool surface, verify-before-trusting, operability) rather
+# than things a prompt line could enforce -- see app/memory/procedural.py.
+_SYSTEM_PROMPT_WITH_MEMORY = render_primary_for_system_prompt() + "\n\n" + SYSTEM_PROMPT
 
 
 @dataclass
@@ -94,12 +104,11 @@ async def run_agent(
     """Run one conversational turn to completion."""
     started = time.perf_counter()
     ctx = ToolContext(db=db, session_id=session_id)
+    turn_id = str(uuid.uuid4())  # groups this turn's spans in the trace store
 
-    messages: list[ChatMessage] = [
-        ChatMessage(role="system", content=SYSTEM_PROMPT),
-        *history[-MAX_HISTORY_MESSAGES:],
-        ChatMessage(role="user", content=user_message),
-    ]
+    messages = build_agent_messages(
+        _SYSTEM_PROMPT_WITH_MEMORY, history, user_message, MAX_HISTORY_MESSAGES
+    )
 
     needs_grounding = not is_trivial(user_message)
     expects_artifact = wants_artifact(user_message)
@@ -123,8 +132,15 @@ async def run_agent(
     tool_specs = None if not needs_grounding else TOOL_SPECS
 
     for iterations in range(1, MAX_ITERATIONS + 1):
-        response = await chat_with_fallback(messages, tools=tool_specs)
+        with trace.Timer() as t:
+            response = await chat_with_fallback(messages, tools=tool_specs)
         provider, model = response.provider, response.model
+        await trace.record_span(trace.Span(
+            session_id=str(session_id), request_id=turn_id, kind="llm_call",
+            name=f"{provider}:{model}", duration_ms=t.ms,
+            prompt_tokens=response.prompt_tokens, completion_tokens=response.completion_tokens,
+            meta={"iteration": iterations, "wants_tools": response.wants_tools},
+        ))
 
         if response.wants_tools:
             messages.append(
@@ -139,6 +155,10 @@ async def run_agent(
                     ctx.tool_log.append(
                         {"tool": call.name, "args": call.arguments, "ok": False, "latency_ms": 0}
                     )
+                    await trace.record_span(trace.Span(
+                        session_id=str(session_id), request_id=turn_id, kind="tool_call",
+                        name=call.name, duration_ms=0, ok=False, meta={"blocked": "redundant_artifact"},
+                    ))
                 elif call.name == "create_artifact" and needs_grounding and not ctx.searched:
                     # An escape hatch around forced retrieval: rather than
                     # answering in text without searching (which the guard
@@ -149,8 +169,17 @@ async def run_agent(
                     ctx.tool_log.append(
                         {"tool": call.name, "args": call.arguments, "ok": False, "latency_ms": 0}
                     )
+                    await trace.record_span(trace.Span(
+                        session_id=str(session_id), request_id=turn_id, kind="tool_call",
+                        name=call.name, duration_ms=0, ok=False, meta={"blocked": "ungrounded_artifact"},
+                    ))
                 else:
                     result = await execute_tool(ctx, call.name, call.arguments)
+                    logged = ctx.tool_log[-1]
+                    await trace.record_span(trace.Span(
+                        session_id=str(session_id), request_id=turn_id, kind="tool_call",
+                        name=call.name, duration_ms=logged["latency_ms"], ok=logged["ok"],
+                    ))
                     if result.get("artifact_created") and ctx.artifacts:
                         artifact_just_created = ctx.artifacts[-1]
                 messages.append(
@@ -219,15 +248,24 @@ async def run_agent(
         # plain answer rather than returning an empty bubble to the user.
         log.warning("agent_iteration_limit", session_id=str(session_id), iterations=iterations)
         try:
-            closing = await chat_with_fallback(
-                [*messages, ChatMessage(role="user", content=(
-                    "Stop calling tools. Answer now in plain prose using what you have."
-                ))],
-                tools=None,
-            )
+            with trace.Timer() as t:
+                closing = await chat_with_fallback(
+                    [*messages, ChatMessage(role="user", content=(
+                        "Stop calling tools. Answer now in plain prose using what you have."
+                    ))],
+                    tools=None,
+                )
             final_content = closing.content
             provider, model = closing.provider, closing.model
-        except LLMError:
+            await trace.record_span(trace.Span(
+                session_id=str(session_id), request_id=turn_id, kind="llm_call",
+                name=f"{provider}:{model}", duration_ms=t.ms, meta={"closing_fallback": True},
+            ))
+        except LLMError as exc:
+            await trace.record_span(trace.Span(
+                session_id=str(session_id), request_id=turn_id, kind="llm_call",
+                name="closing_fallback", duration_ms=0, ok=False, meta={"error": str(exc)},
+            ))
             final_content = (
                 "I wasn't able to complete that request. Please try rephrasing your "
                 "question, or ask about a more specific product or growth topic."
