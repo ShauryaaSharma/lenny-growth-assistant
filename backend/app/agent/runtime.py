@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.prompts import (
+    ARTIFACT_JUST_CREATED_REMINDER,
     FORCE_ARTIFACT_NUDGE,
     FORCE_SEARCH_NUDGE,
     SYSTEM_PROMPT,
@@ -90,6 +91,7 @@ async def run_agent(
     # refusal report grounded=True to the caller -- a real bug caught while
     # wiring in the artifact-nudge guard below.
     ungrounded_guard_fired = False
+    artifact_reminder_sent = False
     final_content = ""
     provider = model = ""
     iterations = 0
@@ -102,14 +104,27 @@ async def run_agent(
             messages.append(
                 ChatMessage(role="assistant", content=response.content, tool_calls=response.tool_calls)
             )
+            artifact_just_created: PendingArtifact | None = None
             for call in response.tool_calls:
                 result = await execute_tool(ctx, call.name, call.arguments)
+                if result.get("artifact_created") and ctx.artifacts:
+                    artifact_just_created = ctx.artifacts[-1]
                 messages.append(
                     ChatMessage(
                         role="tool",
                         content=json.dumps(result, ensure_ascii=False),
                         tool_call_id=call.id,
                         name=call.name,
+                    )
+                )
+            if artifact_just_created is not None and not artifact_reminder_sent:
+                artifact_reminder_sent = True
+                messages.append(
+                    ChatMessage(
+                        role="user",
+                        content=ARTIFACT_JUST_CREATED_REMINDER.format(
+                            title=artifact_just_created.title
+                        ),
                     )
                 )
             continue

@@ -98,6 +98,16 @@ behaviour rather than just structure.
    where an honest refusal was being mislabeled as a grounded answer. Both
    fixed, both covered by new tests, both re-verified live in the browser — see
    [07-artifact-routing-caught-by-manual-browser-testing.md](07-artifact-routing-caught-by-manual-browser-testing.md).
+7. Immediately after that fix, ran the Ship 30 essay skill live for the first
+   time (previously exercised only through mocked agent-routing tests, with
+   zero direct tests on its own rubric logic) and found two more real defects
+   in the same session: conflicting tool instructions when the model called
+   two tools in one turn, and a literal `"[n]"` leaking into the essay's
+   citations because an earlier prompt used it as meta-notation rather than a
+   concrete example. Both fixed, both covered by new tests (including a new
+   `test_ship30_skill.py` file that didn't exist before this), both
+   re-verified live — see
+   [08-conflicting-tool-instructions-and-a-literal-placeholder.md](08-conflicting-tool-instructions-and-a-literal-placeholder.md).
 
 ## What this log is trying to demonstrate
 

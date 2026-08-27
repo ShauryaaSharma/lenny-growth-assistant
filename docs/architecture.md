@@ -222,6 +222,23 @@ second bug this fix surfaced (an ungrounded refusal was mislabeling itself as
 bookkeeping) in
 [agent-transcripts/07-artifact-routing-caught-by-manual-browser-testing.md](../agent-transcripts/07-artifact-routing-caught-by-manual-browser-testing.md).
 
+A related failure surfaced in the same live session: when the model called
+both `search_transcripts` and `write_ship30_essay` in one turn, the two tool
+results carried conflicting closing instructions ("cite as [1], [2]" vs.
+"describe this in 2-3 sentences, do not reproduce it"), and the model followed
+the wrong one. `ARTIFACT_JUST_CREATED_REMINDER` is appended as the last
+message immediately after any tool call that creates an artifact -- regardless
+of what else ran in the same turn -- so a small model's recency bias works for
+the correct instruction instead of against it. A second, independent defect
+found in the same essay generation: the outline and revision prompts used
+"[n]" as meta-notation meaning "insert a number here," and the model took it
+literally, writing the characters "[n]" into the essay instead of a real
+citation number. Fixed by naming the exact literal string in a dedicated
+rubric check (`no_literal_placeholder_citations`) rather than folding it into
+the generic citation-count check, and by rewording both prompts to give a
+concrete example instead of a symbolic placeholder. Full account in
+[agent-transcripts/08-conflicting-tool-instructions-and-a-literal-placeholder.md](../agent-transcripts/08-conflicting-tool-instructions-and-a-literal-placeholder.md).
+
 **Ollama-specific reliability note.** Small quantised models sometimes emit a
 well-formed tool call as plain text in the content field rather than populating
 the structured `tool_calls` array. `OllamaProvider._salvage_tool_call` recovers

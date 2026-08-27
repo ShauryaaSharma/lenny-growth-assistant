@@ -249,6 +249,105 @@ class TestForcedArtifactCreation:
         assert result.content.startswith("Adam Fishman")
 
 
+class TestArtifactCreatedReminder:
+    """Guards against a second failure observed in the same live session: when
+    the model called both search_transcripts and write_ship30_essay in one
+    turn, it answered using the SEARCH tool's "cite as [1], [2]" instruction
+    instead of the essay tool's "describe it in 2-3 sentences" instruction --
+    the two tool results carried conflicting guidance and it picked the wrong
+    one. The reminder re-asserts the artifact instruction last, exploiting
+    recency to make it win regardless of what else happened in the turn."""
+
+    async def test_reminder_is_injected_immediately_after_artifact_creation(
+        self, monkeypatch, grounded_search
+    ):
+        provider = FakeProvider(
+            [
+                tool_response(
+                    "create_artifact",
+                    kind="markdown",
+                    title="Doc",
+                    content="# Doc\n\nSome content.",
+                ),
+                text_response("I put together the document in the panel."),
+            ]
+        )
+        install_provider(monkeypatch, provider)
+
+        result = await run_agent(
+            None, uuid.uuid4(), "Build me a one-page onboarding checklist", []
+        )
+
+        assert len(result.artifacts) == 1
+        # The second LLM call must have seen the reminder as its most recent
+        # message -- this is what fixes the observed conflicting-instructions
+        # failure, since a small model weighs recent context most heavily.
+        second_call_messages = provider.calls[1]
+        assert "just created a document artifact" in second_call_messages[-1].content
+        assert "Doc" in second_call_messages[-1].content
+
+    async def test_reminder_wins_even_when_a_search_call_happens_in_the_same_turn(
+        self, monkeypatch, grounded_search
+    ):
+        """Reproduces the exact live scenario: search_transcripts and
+        create_artifact called together in one model response."""
+        from app.llm.base import LLMResponse, ToolCall
+
+        multi_tool_response = LLMResponse(
+            content="",
+            tool_calls=[
+                ToolCall(id="call_1", name="create_artifact", arguments={
+                    "kind": "markdown", "title": "Combined Doc", "content": "# Combined Doc\n\nBody."
+                }),
+                ToolCall(id="call_2", name="search_transcripts", arguments={"query": "onboarding"}),
+            ],
+            provider="fake",
+            model="fake-model",
+        )
+        provider = FakeProvider(
+            [multi_tool_response, text_response("Here it is, in the panel.")]
+        )
+        install_provider(monkeypatch, provider)
+
+        result = await run_agent(
+            None, uuid.uuid4(), "Build me a one-page onboarding checklist", []
+        )
+
+        assert len(result.artifacts) == 1
+        second_call_messages = provider.calls[1]
+        # The reminder is the LAST message the model sees, after both tool
+        # results, regardless of which tool ran second.
+        assert second_call_messages[-1].content.startswith(
+            'You just created a document artifact titled "Combined Doc"'
+        )
+
+    async def test_reminder_fires_at_most_once_per_turn(self, monkeypatch, grounded_search):
+        provider = FakeProvider(
+            [
+                tool_response(
+                    "create_artifact", kind="markdown", title="A", content="# A\n\nX"
+                ),
+                tool_response(
+                    "create_artifact", kind="markdown", title="B", content="# B\n\nY"
+                ),
+                text_response("Done."),
+            ]
+        )
+        install_provider(monkeypatch, provider)
+
+        await run_agent(None, uuid.uuid4(), "Build me a one-page checklist", [])
+
+        # provider.calls[i] is a growing snapshot of the same message list, so
+        # a single appended reminder reappears in every later snapshot -- the
+        # correct check is "at most once in the final, longest snapshot", not
+        # a sum across all of them (which would overcount by construction).
+        final_messages = provider.calls[-1]
+        reminder_count = sum(
+            1 for m in final_messages if "just created a document artifact" in m.content
+        )
+        assert reminder_count == 1
+
+
 class TestToolDispatch:
     async def test_unknown_tool_is_reported_not_raised(self):
         from app.agent.tools import ToolContext, execute_tool

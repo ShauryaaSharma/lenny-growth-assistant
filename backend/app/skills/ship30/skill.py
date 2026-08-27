@@ -61,7 +61,9 @@ def _outline_prompt(topic: str, evidence: str) -> list[ChatMessage]:
                 "1. HEADLINE: one line, containing the audience, the topic, and a promise.\n"
                 "2. HOOK: the literal first sentence, under 20 words, a concrete claim.\n"
                 "3. SECTIONS: 3 to 4 section headings, each stating a claim rather than "
-                "naming a topic. Under each, list the evidence numbers [n] that support it.\n"
+                "naming a topic. Under each, list which evidence numbers support it -- for "
+                "example, write '1, 3' or '[1], [3]' using the actual numbers from the "
+                "evidence list above. Never write the literal characters '[n]'.\n"
                 "4. TAKEAWAY: the one specific action the reader should take this week.\n\n"
                 "Use only the evidence provided. Do not write the essay."
             ),
@@ -116,6 +118,11 @@ def check_rubric(essay: str, evidence_count: int) -> dict:
     bold_count = len(re.findall(r"\*\*[^*]+\*\*", essay))
     has_list = bool(re.search(r"^\s*([-*]|\d+\.)\s+", essay, re.MULTILINE))
     out_of_range = {c for c in citations if c < 1 or c > evidence_count}
+    # A small model can mistake the outline/revision prompts' meta-notation for
+    # literal output and write "[n]" verbatim instead of a real number -- caught
+    # live on llama3.2:3b. Checked separately from citation count so the
+    # revision instruction can name the exact defect rather than a vague count.
+    has_literal_n_placeholder = bool(re.search(r"\[n\]", essay, re.IGNORECASE))
 
     first_sentence = ""
     body = re.sub(r"^#.*$", "", essay, count=1, flags=re.MULTILINE).strip()
@@ -131,6 +138,7 @@ def check_rubric(essay: str, evidence_count: int) -> dict:
         "bold_not_excessive": bold_count <= 12,
         "has_three_citations": len(citations) >= 3,
         "citations_in_range": not out_of_range,
+        "no_literal_placeholder_citations": not has_literal_n_placeholder,
     }
     return {
         "passed": all(checks.values()),
@@ -163,10 +171,18 @@ def _revision_prompt(essay: str, report: dict, evidence: str) -> list[ChatMessag
         instructions.append(
             f"There are {report['section_count']} `## ` sections; there must be 3 to 5."
         )
+    if "no_literal_placeholder_citations" in failures:
+        instructions.append(
+            "The essay contains the literal characters '[n]' where a real citation "
+            "number belongs. Replace every '[n]' with the actual number of the "
+            "evidence excerpt it refers to -- for example [1] or [3]. Never leave "
+            "'[n]' in the output."
+        )
     if "has_three_citations" in failures:
         instructions.append(
-            f"Only {report['citation_count']} distinct citations appear. Cite at least 3 "
-            f"distinct pieces of evidence inline as [n]."
+            f"Only {report['citation_count']} distinct citations appear, using real "
+            f"bracketed numbers from the evidence list -- for example [1] or [3]. "
+            f"Cite at least 3 distinct pieces of evidence this way."
         )
     if "citations_in_range" in failures:
         instructions.append(
