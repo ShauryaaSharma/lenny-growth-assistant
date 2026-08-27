@@ -79,6 +79,30 @@ using the evidence already retrieved. Do not write the document as a plain \
 chat message."""
 
 
+# Returned as a synthetic tool-error result (never actually running the tool)
+# when create_artifact is called before the turn has searched. Observed live:
+# "What's the best sourdough starter recipe?" and "give me a one-page
+# sourdough starter checklist" both skipped search_transcripts entirely and
+# went straight to create_artifact, which faithfully rendered a fabricated
+# recipe as a legitimate-looking document -- the forced-retrieval guard never
+# got a chance to fire because it only watches for a bare *text* answer given
+# without searching, not for a tool call used as an escape hatch instead.
+BLOCKED_UNGROUNDED_ARTIFACT = """You cannot create this document yet. You must call \
+`search_transcripts` first to check whether Lenny's Podcast covers this topic. \
+Call it now. If it comes back empty, tell the user the transcripts don't cover \
+this topic instead of creating a document."""
+
+
+# Returned as a synthetic tool-error result when create_artifact or
+# write_ship30_essay is called a second time in the same turn after an
+# artifact already exists. Observed live: the model created one artifact
+# correctly, then -- instead of just describing it as instructed -- searched
+# again and created a second, unwanted artifact in the same turn.
+BLOCKED_REDUNDANT_ARTIFACT = """You already created a document in this turn. Do \
+not create another one. Reply now with 1-3 sentences describing the document \
+you already made."""
+
+
 # Phrases strongly indicating the user wants a rendered document rather than a
 # conversational answer. Deliberately does not include "essay"/"article" --
 # those route to write_ship30_essay instead, which has its own tool and rules.

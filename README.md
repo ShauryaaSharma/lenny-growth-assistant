@@ -51,14 +51,14 @@ Runs entirely on your machine. No API key required.
 │   │   ├── api/              # FastAPI routers: chat, sessions, artifacts, health
 │   │   ├── db/                # SQLAlchemy models + async session lifecycle
 │   │   ├── llm/                # LLMProvider interface + Ollama / OpenAI-compat / registry
-│   │   ├── evals/                  # golden-set retrieval evaluation harness
+│   │   ├── evals/                  # retrieval eval + agent-scenario harness
 │   │   ├── rag/                  # chunking, embeddings, hybrid retriever, ingestion CLI
 │   │   ├── schemas/                # Pydantic request/response contracts
 │   │   ├── security/                # HTML/Markdown sanitiser (see architecture.md#security)
 │   │   ├── skills/ship30/             # principles.md (data) + skill.py (pipeline)
 │   │   ├── config.py, logging.py, main.py
 │   ├── alembic/                # one migration: the full schema
-│   ├── tests/                  # 106 tests -- see docs/architecture.md#testing-strategy
+│   ├── tests/                  # 134 tests -- see docs/architecture.md#testing-strategy
 │   └── Dockerfile, requirements*.txt
 ├── frontend/
 │   ├── app/                  # Next.js app router: layout, page, global styles
@@ -71,7 +71,7 @@ Runs entirely on your machine. No API key required.
 │   ├── architecture.md        # schema, request lifecycle, security, deployment
 │   ├── design.md                # UI/UX principles, states, accessibility
 │   └── test-plan.md              # manual UI test plan
-├── agent-transcripts/         # 11 entries: real defects found live, root-caused, fixed
+├── agent-transcripts/         # 11 entries: real defects (incl. 2 live hallucinations) found, fixed
 ├── docker-compose.yml
 └── .env.example
 ```
@@ -87,7 +87,7 @@ For an evaluator checking requirements against implementation directly:
 | 3.1 API, sessions, persistence | FastAPI (`backend/app/api/`), sessions scoped at the query level (`routes_sessions.py`), Postgres via SQLAlchemy (`db/models.py`) |
 | 3.2 Flexible LLM configuration | `LLMProvider` interface (`llm/base.py`), Ollama + OpenAI-compatible adapters, one env var toggle -- see [Switching models](#switching-models) |
 | 3.3 Knowledge base | 303-episode corpus, chunked on speaker turns, embedded, indexed (pgvector HNSW + Postgres FTS) -- see [architecture.md#ingestion-and-retrieval-flow](docs/architecture.md#ingestion-and-retrieval-flow) |
-| 4.1 Grounded conversational assistant | Hybrid retrieval + hard grounding floor + forced-retrieval and ungrounded guards -- see [architecture.md#agent-layer](docs/architecture.md#agent-layer); grounding rate and false-ground rate actually measured, not just claimed -- see [Evaluation](#evaluation) |
+| 4.1 Grounded conversational assistant | Hybrid retrieval + hard grounding floor + forced-retrieval and ungrounded guards, including a tool-call-level guard closing a real live hallucination path -- see [architecture.md#agent-layer](docs/architecture.md#agent-layer); grounding rate, false-ground rate, and agent-level routing correctness all actually measured, not just claimed -- see [Evaluation](#evaluation) |
 | 4.2 Ship 30 for 30 skill | `backend/app/skills/ship30/` -- principles as data, outline→draft→rubric→revise pipeline |
 | 4.3 Artifact generation + viewer | `create_artifact` tool + `ArtifactViewer.tsx`, sandboxed rendering -- see [architecture.md#security](docs/architecture.md#security) |
 | 5. Deployment & operational readiness | One-command `docker compose up`, `.env.example`, structured logs, `/health/deep`, this README's [Troubleshooting](#troubleshooting) |
@@ -96,8 +96,8 @@ For an evaluator checking requirements against implementation directly:
 | 6.3 PRD | [docs/PRD.md](docs/PRD.md) |
 | 6.4 design.md | [docs/design.md](docs/design.md) |
 | 6.5 architecture.md | [docs/architecture.md](docs/architecture.md) |
-| 6.6 Agent transcripts | [agent-transcripts/](agent-transcripts/) -- 11 entries, including 4 real defects found and fixed by running the system live against the required local model, one of them by an eval harness |
-| 6.7 Tests | 106 automated tests -- see [Testing](#testing) -- plus a 24-question golden-set evaluation harness ([Evaluation](#evaluation)) and [docs/test-plan.md](docs/test-plan.md) |
+| 6.6 Agent transcripts | [agent-transcripts/](agent-transcripts/) -- 11 entries, including 4 real defects found and fixed by running the system live (2 of them live hallucinations caught by the agent harness) and a real grounding-threshold defect caught by the retrieval eval harness |
+| 6.7 Tests | 134 automated tests -- see [Testing](#testing) -- plus a 24-question retrieval eval harness and an 8-scenario agent harness ([Evaluation](#evaluation)) and [docs/test-plan.md](docs/test-plan.md) |
 | 6.8 Demo video | Not part of this repository; recorded separately per the submission instructions |
 
 ---
@@ -311,6 +311,21 @@ of this harness found a real defect: an under-tuned similarity floor let 80%
 of out-of-domain questions incorrectly ground. Full account in
 [docs/architecture.md#evaluation](docs/architecture.md#evaluation) and
 `agent-transcripts/10`.
+
+A sibling harness tests the agent loop itself, not just retrieval -- real
+model, real tool registry, real guards, against 8 golden conversations:
+
+```bash
+docker compose exec backend python -m app.evals.run_agent_eval             # full run (~15 min, includes the essay)
+docker compose exec backend python -m app.evals.run_agent_eval --exclude-slow  # fast scenarios only
+```
+
+Its first run found two live hallucinations: asked for a sourdough recipe or
+checklist, the model skipped retrieval entirely and rendered fabricated
+content as a legitimate artifact. Fixed, and now covered by a permanent
+regression test in every case. Full account in
+[docs/architecture.md#agent-scenario-evaluation](docs/architecture.md#agent-scenario-evaluation)
+and `agent-transcripts/11`.
 
 ---
 

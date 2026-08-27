@@ -260,12 +260,20 @@ is hand-rolled here instead. That trade is made explicitly, not silently.
 ### The loop
 
 ```
+trivial message? ──▶ tools=None, model answers directly, no guard needed
+        │ no
+        ▼
 system prompt + history + user message
         │
         ▼
    chat_with_fallback(messages, tools)
         │
-        ├─ wants_tools? ──▶ execute each tool ──▶ append tool results ──▶ loop
+        ├─ wants_tools?
+        │     ├─ create_artifact, but hasn't searched yet? ──▶ block the call, return a
+        │     │      synthetic error instructing it to search first, loop
+        │     ├─ create_artifact/write_ship30_essay, but an artifact already
+        │     │      exists this turn? ──▶ block the call (redundant), loop
+        │     └─ otherwise: execute each tool ──▶ append tool results ──▶ loop
         │
         └─ final answer:
               │
@@ -278,6 +286,22 @@ system prompt + history + user message
 Bounded at `MAX_ITERATIONS = 5`; if the model still hasn't converged, a final
 no-tools turn asks it to answer in plain prose from whatever it has, so the
 user never sees an empty response.
+
+**The two tool-call interceptions above close a real hallucination path.** The
+forced-retrieval guard only ever watched for a bare *text* answer given
+without searching -- it had no opinion about the model calling some other
+tool instead. Found by the agent-scenario harness (agent-transcripts/11) on
+its first live run: asked "what's the best sourdough starter recipe?" or "give
+me a one-page sourdough starter checklist," `llama3.2:3b` skipped
+`search_transcripts` entirely and called `create_artifact` directly, which
+rendered a fully fabricated recipe or checklist as a legitimate-looking
+document. `create_artifact` is now intercepted -- not trusted -- before it
+runs: if the turn needed grounding and hasn't searched yet, the call never
+executes; a synthetic tool error is returned instead, forcing a real search.
+A second, independent gap closed the same session: nothing capped how many
+artifacts one turn could produce, and the model created a second, unwanted
+one after the first had already succeeded -- now blocked outright once one
+artifact exists.
 
 **Why three deterministic guards rather than trusting the system prompt:** on a
 3B model, "the prompt tells it to always search first" (or "always render a
@@ -580,12 +604,53 @@ account, including the one existing test whose weak synthetic fixture needed
 tightening at the new stricter threshold, in
 [agent-transcripts/10-eval-harness-caught-a-real-grounding-defect.md](../agent-transcripts/10-eval-harness-caught-a-real-grounding-defect.md).
 
-**What this still does not cover.** The eval harness scores retrieval, not the
-full agent turn -- it does not verify the model actually refuses correctly
-when told to, or that a citation's claim is faithful to its source passage
-rather than merely valid-in-range. Those remain covered by
-`tests/test_agent_routing.py` (scripted) and the manual test plan
-(`docs/test-plan.md`, live) respectively. A natural next step neither budget
-nor scope covered here: an LLM-as-judge pass scoring citation faithfulness on
-a sample of real live answers, and expanding the golden set past 24 questions
-as more edge cases are found in production.
+**What this still does not cover.** `run_eval.py` scores retrieval only -- it
+never calls the agent loop or the model, so it cannot see whether the model
+actually refuses correctly when told to, or routes to the right tool. That
+gap is closed by a second, sibling harness.
+
+### Agent scenario evaluation
+
+```
+backend/app/evals/
+├── agent_scenarios.py  # 8 golden conversations: trivial, grounded Q&A,
+│                          out-of-domain refusal, artifact creation,
+│                          artifact refusal, multi-turn, essay (slow)
+└── run_agent_eval.py   # calls the real run_agent() -- real model, real
+                           tool registry, real guards -- and scores tool-call
+                           correctness, refusal correctness, artifact
+                           correctness, and redundant-call detection
+```
+
+```bash
+docker compose exec backend python -m app.evals.run_agent_eval             # full run
+docker compose exec backend python -m app.evals.run_agent_eval --exclude-slow  # skip the essay
+```
+
+Asked directly "do we have any agent harness?" after `run_eval.py` shipped --
+the honest answer was no, and this is what closed it. Unlike
+`tests/test_agent_routing.py`, which scripts a `FakeProvider` and can only
+catch bugs its author already imagined, this drives the real model. **It
+found two live hallucinations on its first run**: asked for a sourdough
+recipe or checklist, `llama3.2:3b` skipped `search_transcripts` entirely and
+called `create_artifact` directly, rendering fabricated content as a
+legitimate document -- the exact gap the forced-retrieval guard never covered
+(described above), invisible to every scripted test because no one had
+scripted a model choosing the *wrong* tool as an escape hatch. Also found: a
+redundant second artifact created in one turn, and a wasted ~150s tool call
+on a trivial greeting. All four fixed in `agent/runtime.py`.
+
+Re-verifying the fix then surfaced two bugs in the harness's own scoring --
+a refusal-marker list missing the plural phrasing a real reply used, and
+blocked tool-call attempts being counted the same as executed ones, scoring
+the new guards' own correct behaviour as a failure. Fixed with the same
+discipline applied one level up: read what the model actually said before
+trusting a FAIL. Final clean run: **8/8 scenarios, 100% across every
+category**. Full account in
+[agent-transcripts/11-agent-harness-found-three-real-hallucination-bugs.md](../agent-transcripts/11-agent-harness-found-three-real-hallucination-bugs.md).
+
+**What neither harness covers yet:** citation faithfulness -- whether a
+claim next to a `[1]` actually reflects what that passage says, not merely
+that `[1]` is a valid, in-range index. A natural next step neither budget nor
+scope covered here: an LLM-as-judge pass over a sample of real live answers,
+and expanding both golden sets as more edge cases are found in production.

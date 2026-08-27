@@ -3,22 +3,40 @@
 A tool-calling loop written against `LLMProvider`, so the identical code path
 serves both the local Ollama demo and any cloud provider.
 
-Three pieces of deterministic insurance wrap the model's own judgement, because
-"the model will remember to search" is not a reliability strategy on a 3B model:
+Several pieces of deterministic insurance wrap the model's own judgement,
+because "the model will remember to search" is not a reliability strategy on
+a 3B model:
 
+  * **No tools on trivial messages.** A greeting or acknowledgment is not
+    offered any tool at all. Found live by the agent-scenario harness
+    (agent-transcripts/11): "hi" was calling `search_transcripts` with a
+    hallucinated, unrelated query, costing ~150s for nothing.
   * **Forced retrieval.** If the model tries to answer a substantive question
     without calling `search_transcripts`, we reject that turn once and make it
     search. Routing accuracy stops being probabilistic.
+  * **Blocked ungrounded artifact creation.** The forced-retrieval guard above
+    only catches a bare *text* answer given without searching -- it does
+    nothing if the model instead calls `create_artifact` directly as an
+    escape hatch. Found live: "What's the best sourdough starter recipe?" and
+    "give me a one-page sourdough starter checklist" both skipped
+    `search_transcripts` entirely and went straight to `create_artifact`,
+    which dutifully rendered a fully fabricated recipe as a legitimate-looking
+    document. `create_artifact` is now intercepted before it runs if the turn
+    needed grounding and hasn't searched yet, forcing a real search first.
   * **Ungrounded guard.** If retrieval came back empty, a guard message is
     appended before the final turn so the model cannot quietly fall back on
     parametric knowledge.
   * **Forced artifact creation.** If the user's phrasing strongly indicates a
     document request ("checklist", "one-pager", "template"...) but the model
     answered in chat prose instead of calling `create_artifact`, one nudge
-    turn corrects it. This is not hypothetical: observed directly on
-    `llama3.2:3b` during manual testing, which searched correctly for "a
-    one-page onboarding audit checklist" and then wrote the checklist as a
-    plain chat message rather than registering it as a rendered artifact.
+    turn corrects it. Observed directly on `llama3.2:3b`, which searched
+    correctly for "a one-page onboarding audit checklist" and then wrote the
+    checklist as a plain chat message rather than registering it as an
+    artifact.
+  * **No redundant artifact/essay creation.** Once one artifact exists this
+    turn, a further `create_artifact` or `write_ship30_essay` call is blocked
+    rather than executed -- found live creating a second, unwanted artifact
+    in the same turn after the first had already succeeded.
 
 Bounded by MAX_ITERATIONS so a model that loops on tool calls cannot run forever.
 """
@@ -34,6 +52,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.prompts import (
     ARTIFACT_JUST_CREATED_REMINDER,
+    BLOCKED_REDUNDANT_ARTIFACT,
+    BLOCKED_UNGROUNDED_ARTIFACT,
     FORCE_ARTIFACT_NUDGE,
     FORCE_SEARCH_NUDGE,
     SYSTEM_PROMPT,
@@ -96,8 +116,14 @@ async def run_agent(
     provider = model = ""
     iterations = 0
 
+    # Tools are not even offered on a trivial message. Found live: "hi" was
+    # calling search_transcripts with a hallucinated, unrelated query -- the
+    # forced-retrieval guard only ever governed what happens after a tool is
+    # offered, never whether one should be offered at all.
+    tool_specs = None if not needs_grounding else TOOL_SPECS
+
     for iterations in range(1, MAX_ITERATIONS + 1):
-        response = await chat_with_fallback(messages, tools=TOOL_SPECS)
+        response = await chat_with_fallback(messages, tools=tool_specs)
         provider, model = response.provider, response.model
 
         if response.wants_tools:
@@ -106,9 +132,27 @@ async def run_agent(
             )
             artifact_just_created: PendingArtifact | None = None
             for call in response.tool_calls:
-                result = await execute_tool(ctx, call.name, call.arguments)
-                if result.get("artifact_created") and ctx.artifacts:
-                    artifact_just_created = ctx.artifacts[-1]
+                if call.name in ("create_artifact", "write_ship30_essay") and ctx.artifacts:
+                    # A second content-creating call in the same turn.
+                    log.info("blocking_redundant_artifact", session_id=str(session_id), tool=call.name)
+                    result = {"error": BLOCKED_REDUNDANT_ARTIFACT}
+                    ctx.tool_log.append(
+                        {"tool": call.name, "args": call.arguments, "ok": False, "latency_ms": 0}
+                    )
+                elif call.name == "create_artifact" and needs_grounding and not ctx.searched:
+                    # An escape hatch around forced retrieval: rather than
+                    # answering in text without searching (which the guard
+                    # below would catch), the model calls create_artifact
+                    # directly and fabricates content into a document instead.
+                    log.info("blocking_ungrounded_artifact", session_id=str(session_id))
+                    result = {"error": BLOCKED_UNGROUNDED_ARTIFACT}
+                    ctx.tool_log.append(
+                        {"tool": call.name, "args": call.arguments, "ok": False, "latency_ms": 0}
+                    )
+                else:
+                    result = await execute_tool(ctx, call.name, call.arguments)
+                    if result.get("artifact_created") and ctx.artifacts:
+                        artifact_just_created = ctx.artifacts[-1]
                 messages.append(
                     ChatMessage(
                         role="tool",

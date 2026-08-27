@@ -263,6 +263,10 @@ class TestArtifactCreatedReminder:
     ):
         provider = FakeProvider(
             [
+                # create_artifact is now blocked unless the turn has already
+                # searched -- a search must come first, matching the real,
+                # correctly-enforced flow.
+                tool_response("search_transcripts", query="onboarding checklist"),
                 tool_response(
                     "create_artifact",
                     kind="markdown",
@@ -279,33 +283,32 @@ class TestArtifactCreatedReminder:
         )
 
         assert len(result.artifacts) == 1
-        # The second LLM call must have seen the reminder as its most recent
+        # The third LLM call must have seen the reminder as its most recent
         # message -- this is what fixes the observed conflicting-instructions
         # failure, since a small model weighs recent context most heavily.
-        second_call_messages = provider.calls[1]
-        assert "just created a document artifact" in second_call_messages[-1].content
-        # Regression: create_artifact never calls search_transcripts, so
-        # ctx.searched stays False. Without excluding the reminder turn from
-        # the forced-retrieval gate, this exact compliant reply was rejected
-        # and forced into a pointless extra search cycle, observed live.
+        third_call_messages = provider.calls[2]
+        assert "just created a document artifact" in third_call_messages[-1].content
         assert result.content == "I put together the document in the panel."
-        assert result.iterations == 2
-        assert "Doc" in second_call_messages[-1].content
+        assert result.iterations == 3
+        assert "Doc" in third_call_messages[-1].content
 
     async def test_reminder_wins_even_when_a_search_call_happens_in_the_same_turn(
         self, monkeypatch, grounded_search
     ):
         """Reproduces the exact live scenario: search_transcripts and
-        create_artifact called together in one model response."""
+        create_artifact called together in one model response. search_transcripts
+        must run first in the list -- create_artifact is blocked until the turn
+        has searched, so this also verifies calls within one response are
+        applied in order rather than all evaluated against a stale ctx snapshot."""
         from app.llm.base import LLMResponse, ToolCall
 
         multi_tool_response = LLMResponse(
             content="",
             tool_calls=[
-                ToolCall(id="call_1", name="create_artifact", arguments={
+                ToolCall(id="call_1", name="search_transcripts", arguments={"query": "onboarding"}),
+                ToolCall(id="call_2", name="create_artifact", arguments={
                     "kind": "markdown", "title": "Combined Doc", "content": "# Combined Doc\n\nBody."
                 }),
-                ToolCall(id="call_2", name="search_transcripts", arguments={"query": "onboarding"}),
             ],
             provider="fake",
             model="fake-model",
@@ -330,9 +333,13 @@ class TestArtifactCreatedReminder:
     async def test_reminder_fires_at_most_once_per_turn(self, monkeypatch, grounded_search):
         provider = FakeProvider(
             [
+                tool_response("search_transcripts", query="checklist topic"),
                 tool_response(
                     "create_artifact", kind="markdown", title="A", content="# A\n\nX"
                 ),
+                # A second create_artifact after one already exists this turn
+                # must now be blocked outright, not merely discouraged by the
+                # reminder -- found live creating an unwanted second artifact.
                 tool_response(
                     "create_artifact", kind="markdown", title="B", content="# B\n\nY"
                 ),
@@ -341,7 +348,10 @@ class TestArtifactCreatedReminder:
         )
         install_provider(monkeypatch, provider)
 
-        await run_agent(None, uuid.uuid4(), "Build me a one-page checklist", [])
+        result = await run_agent(None, uuid.uuid4(), "Build me a one-page checklist", [])
+
+        assert len(result.artifacts) == 1, "the redundant create_artifact call must be blocked, not executed"
+        assert result.artifacts[0].title == "A"
 
         # provider.calls[i] is a growing snapshot of the same message list, so
         # a single appended reminder reappears in every later snapshot -- the
@@ -496,6 +506,127 @@ class TestToolDispatch:
         await execute_tool(ctx, "search_transcripts", {"query": "a"})
         await execute_tool(ctx, "search_transcripts", {"query": "b"})
         assert len(ctx.citations) == 1
+
+
+class TestNoToolsOnTrivialMessages:
+    """Regression for agent-transcripts/11: "hi" was calling search_transcripts
+    with a hallucinated, unrelated query, costing ~150s for a greeting. The
+    forced-retrieval guard only ever governed what happens after a tool call
+    is offered -- it never stopped one being offered on a trivial message in
+    the first place."""
+
+    async def test_trivial_message_is_never_given_tools(self, monkeypatch):
+        provider = FakeProvider([text_response("Hello! Ask me about product or growth.")])
+        install_provider(monkeypatch, provider)
+
+        result = await run_agent(None, uuid.uuid4(), "hi", [])
+
+        assert result.tool_calls == []
+        # The provider must have been called with tools=None, not just happen
+        # to not use them -- this is what makes an unwanted tool call
+        # structurally impossible rather than merely unlikely.
+        assert provider.calls  # sanity: the provider was actually invoked
+        # FakeProvider doesn't record the tools argument directly, but a call
+        # with tools=None cannot legally return wants_tools=True; confirm the
+        # loop accepted a plain text answer on the very first iteration.
+        assert result.iterations == 1
+        assert result.content == "Hello! Ask me about product or growth."
+
+
+class TestBlockedUngroundedArtifact:
+    """Regression for agent-transcripts/11: asked for a document on a topic
+    never searched, the model called create_artifact directly instead of
+    search_transcripts -- a fully fabricated recipe was rendered as a
+    legitimate-looking artifact. The forced-retrieval guard never caught this
+    because it only ever watched for a bare text answer given without
+    searching, not for a tool call used as an escape hatch instead."""
+
+    async def test_create_artifact_before_any_search_is_blocked(self, monkeypatch):
+        provider = FakeProvider(
+            [
+                # Straight to create_artifact, no search_transcripts call --
+                # exactly what was observed live.
+                tool_response(
+                    "create_artifact", kind="markdown", title="Recipe",
+                    content="# Sourdough Starter Recipe\n\nFabricated content.",
+                ),
+                tool_response("search_transcripts", query="sourdough starter recipe"),
+                text_response("Lenny's Podcast doesn't cover sourdough baking."),
+            ]
+        )
+        install_provider(monkeypatch, provider)
+
+        result = await run_agent(
+            None, uuid.uuid4(), "What's the best sourdough starter recipe?", []
+        )
+
+        assert result.artifacts == [], "the fabricated artifact must never be created"
+        # The blocked call is still recorded, marked as failed -- visible in
+        # the trace rather than silently dropped.
+        blocked = [t for t in result.tool_calls if t["tool"] == "create_artifact"]
+        assert blocked and blocked[0]["ok"] is False
+
+    async def test_a_grounded_document_request_is_not_blocked(self, monkeypatch, grounded_search):
+        """The guard must not over-block: once the turn has searched and
+        found real material, create_artifact must proceed normally."""
+        provider = FakeProvider(
+            [
+                tool_response("search_transcripts", query="onboarding checklist"),
+                tool_response(
+                    "create_artifact", kind="markdown", title="Checklist", content="# Checklist\n\nReal."
+                ),
+                text_response("I made the checklist."),
+            ]
+        )
+        install_provider(monkeypatch, provider)
+
+        result = await run_agent(
+            None, uuid.uuid4(), "Build me a one-page onboarding checklist", []
+        )
+        assert len(result.artifacts) == 1
+
+
+class TestBlockedRedundantArtifactAcrossTools:
+    """The redundant-artifact guard blocks either content-creating tool once
+    one artifact already exists this turn -- not just a repeat of the same
+    tool. Cross-tool coverage: an essay already created, then the model
+    tries create_artifact anyway."""
+
+    async def test_create_artifact_after_an_essay_already_exists_is_blocked(
+        self, monkeypatch
+    ):
+        import app.agent.tools as tools_module
+
+        async def fake_write_essay(db, topic):
+            return {
+                "ok": True,
+                "essay": "# Title\n\nBody.",
+                "rubric": {"word_count": 1200, "passed": True},
+                "citations": [],
+                "revised": False,
+            }
+
+        monkeypatch.setattr(tools_module, "write_ship30_essay", fake_write_essay)
+
+        provider = FakeProvider(
+            [
+                tool_response("write_ship30_essay", topic="retention"),
+                tool_response(
+                    "create_artifact", kind="markdown", title="Extra", content="# Extra\n\nY"
+                ),
+                text_response("Done."),
+            ]
+        )
+        install_provider(monkeypatch, provider)
+
+        result = await run_agent(
+            None, uuid.uuid4(), "Write a Ship 30 essay about retention", []
+        )
+
+        assert len(result.artifacts) == 1
+        assert result.artifacts[0].kind == "markdown"
+        blocked = [t for t in result.tool_calls if t["tool"] == "create_artifact"]
+        assert blocked and blocked[0]["ok"] is False
 
 
 class TestTrivialDetection:

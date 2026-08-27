@@ -183,7 +183,7 @@ disclosure of anything that was stripped.
 | 9 | Artifacts render in-app, not as raw code | Met |
 | 10 | Generated HTML treated as untrusted | Met — two independent layers |
 | 11 | Graceful handling of missing keys, dead Ollama, timeouts, empty retrieval, DB loss | Met — typed errors with actionable hints |
-| 12 | Meaningful automated tests | Met — 106 passing |
+| 12 | Meaningful automated tests | Met — 134 passing |
 | 13 | No secrets committed | Met |
 
 ---

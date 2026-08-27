@@ -130,6 +130,21 @@ behaviour rather than just structure.
    between them — replacing a guess with a number that has evidence behind
    it. See
    [10-eval-harness-caught-a-real-grounding-defect.md](10-eval-harness-caught-a-real-grounding-defect.md).
+10. Asked directly "do we have any agent harness?" -- distinct from the retrieval-only
+    eval harness above. Built one (`app/evals/agent_scenarios.py` +
+    `run_agent_eval.py`): 8 golden conversations run through the real
+    `run_agent()` loop against the real model. The first run found two live
+    hallucinations -- asked for a sourdough recipe or checklist, the model
+    skipped `search_transcripts` entirely and called `create_artifact`
+    directly, rendering fabricated content as a legitimate document -- plus a
+    redundant-artifact defect and a wasteful tool call on trivial greetings.
+    Fixed all four in `agent/runtime.py`. Re-verifying the fix then surfaced
+    two bugs in the harness's *own* scoring (a too-narrow refusal-marker list,
+    and blocked tool attempts miscounted as executed ones) -- fixed those too,
+    applying the same "read what actually happened before trusting a FAIL"
+    discipline one level up. Final clean run: 8/8 scenarios, 100% across every
+    category. See
+    [11-agent-harness-found-three-real-hallucination-bugs.md](11-agent-harness-found-three-real-hallucination-bugs.md).
 
 ## What this log is trying to demonstrate
 
