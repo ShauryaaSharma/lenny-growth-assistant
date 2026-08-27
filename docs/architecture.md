@@ -13,6 +13,8 @@
 - [Observability](#observability)
 - [Testing strategy](#testing-strategy)
 - [Evaluation](#evaluation)
+  - [LLM harness](#llm-harness)
+  - [Agent harness](#agent-harness)
 
 ---
 
@@ -552,17 +554,26 @@ incident — the suite's blind spot is named, not hidden.
 
 Tests verify the code does what it was told. Evaluation verifies the *system*
 does what the PRD promised — a different question, answered against real
-questions and the real embedded corpus rather than scripted inputs.
+questions and the real embedded corpus rather than scripted inputs. Two
+independent harnesses do this, gating two different layers: the **LLM
+harness** (retrieval and grounding — does the right evidence come back) and
+the **agent harness** (the tool-calling loop — does the model act on that
+evidence correctly). Both are `app/evals/`, both score against a labeled
+golden set, both found a real defect on their first run.
 
 ```
 backend/app/evals/
-├── golden_set.py   # 24 labeled questions: 14 in-domain (7 naming a guest
-│                     confirmed in the corpus, 7 broad topic questions),
-│                     10 out-of-domain (deliberately unrelated to product,
-│                     growth, or company-building)
-└── run_eval.py     # runs rag.retriever.search() -- no model, no agent loop
-                      -- against every question and scores the result
+├── golden_set.py       # LLM harness data: 24 labeled questions -- 14 in-domain
+│                          (7 naming a guest confirmed in the corpus, 7 broad
+│                          topic), 10 out-of-domain
+├── run_eval.py          # LLM harness runner: rag.retriever.search() only --
+│                          no model, no agent loop
+├── agent_scenarios.py   # agent harness data: 8 golden conversations
+└── run_agent_eval.py    # agent harness runner: the real run_agent() loop --
+                           real model, real tool registry, real guards
 ```
+
+### LLM harness
 
 ```bash
 docker compose exec backend python -m app.evals.run_eval
@@ -609,7 +620,7 @@ never calls the agent loop or the model, so it cannot see whether the model
 actually refuses correctly when told to, or routes to the right tool. That
 gap is closed by a second, sibling harness.
 
-### Agent scenario evaluation
+### Agent harness
 
 ```
 backend/app/evals/

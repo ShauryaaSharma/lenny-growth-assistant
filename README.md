@@ -1,6 +1,6 @@
 # The Lenny Growth Assistant
 
-![Architecture diagram](docs/architecture_v3.png)
+![Architecture diagram](docs/architecture_v4.png)
 
 A grounded conversational assistant over [Lenny's Podcast](https://www.lennyspodcast.com/)
 transcripts. Ask product and growth questions and get answers cited back to the
@@ -296,9 +296,14 @@ useful on a bare laptop. The manual UI test plan is in
 
 ### Evaluation
 
-Tests verify the code; this verifies the *system* against the PRD's actual
-success metric and guardrail, using a 24-question labeled golden set run
-against the real retriever and the real corpus:
+Tests verify the code; two independent harnesses verify the *system* against
+the PRD's actual success metric and guardrail -- the **LLM harness** (does
+retrieval ground the right questions) and the **agent harness** (does the
+model act on that grounding correctly). Both run against real data with no
+scripted inputs.
+
+**LLM harness** -- a 24-question labeled golden set run against the real
+retriever and the real corpus:
 
 ```bash
 docker compose exec backend python -m app.evals.run_eval
@@ -307,12 +312,12 @@ docker compose exec backend python -m app.evals.run_eval
 Reports Grounded Answer Rate (target ≥ 80%), False-Ground Rate on
 out-of-domain questions (must be 0%), guest-match precision, and retrieval
 latency — and exits non-zero if either threshold is violated. The first run
-of this harness found a real defect: an under-tuned similarity floor let 80%
-of out-of-domain questions incorrectly ground. Full account in
-[docs/architecture.md#evaluation](docs/architecture.md#evaluation) and
+found a real defect: an under-tuned similarity floor let 80% of out-of-domain
+questions incorrectly ground. Full account in
+[docs/architecture.md#llm-harness](docs/architecture.md#llm-harness) and
 `agent-transcripts/10`.
 
-A sibling harness tests the agent loop itself, not just retrieval -- real
+**Agent harness** -- tests the agent loop itself, not just retrieval -- real
 model, real tool registry, real guards, against 8 golden conversations:
 
 ```bash
@@ -324,7 +329,7 @@ Its first run found two live hallucinations: asked for a sourdough recipe or
 checklist, the model skipped retrieval entirely and rendered fabricated
 content as a legitimate artifact. Fixed, and now covered by a permanent
 regression test in every case. Full account in
-[docs/architecture.md#agent-scenario-evaluation](docs/architecture.md#agent-scenario-evaluation)
+[docs/architecture.md#agent-harness](docs/architecture.md#agent-harness)
 and `agent-transcripts/11`.
 
 ---
