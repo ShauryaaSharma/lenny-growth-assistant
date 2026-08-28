@@ -13,7 +13,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /srv
 
 COPY requirements.txt ./
-RUN pip install -r requirements.txt
+# pip's default 15s read timeout is too short for large wheels (onnxruntime,
+# numpy) on a slow or congested connection -- an evaluator on imperfect
+# network shouldn't see a spurious build failure over it.
+RUN pip install --default-timeout=120 --retries 5 -r requirements.txt
 
 COPY alembic.ini ./
 COPY alembic ./alembic

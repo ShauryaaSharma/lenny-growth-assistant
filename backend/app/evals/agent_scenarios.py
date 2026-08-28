@@ -41,6 +41,13 @@ class ScenarioTurn:
     expect_grounded: bool | None = None  # None = don't check
     expect_artifact: bool | None = None  # None = don't check
     expect_refusal_language: bool = False
+    # Substrings that must NOT appear in the reply text. Regression guard for
+    # a live bug: "Hey" (trivial, no search offered) still got back a
+    # fabricated quote formatted as "[1]" with an invented guest name --
+    # the model's citation habit firing with nothing real to cite. Routing
+    # checks alone (forbidden_tools) don't catch this, since no tool was
+    # ever called; only the reply text shows the fabrication.
+    forbidden_reply_patterns: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -74,11 +81,17 @@ AGENT_SCENARIOS: list[AgentScenario] = [
     AgentScenario(
         name="greeting_no_tools",
         category="trivial",
-        notes="A greeting must not trigger retrieval at all -- see is_trivial().",
+        notes=(
+            "A greeting must not trigger retrieval at all -- see is_trivial(). "
+            "Also must not fabricate a citation-style reply -- see "
+            "agent-transcripts/12 for the live 'Hey' -> fake [1] quote bug."
+        ),
         turns=[
             ScenarioTurn(
                 message="hi",
                 forbidden_tools=["search_transcripts", "write_ship30_essay", "create_artifact"],
+                expect_grounded=False,
+                forbidden_reply_patterns=["[1]", "[2]"],
             )
         ],
     ),

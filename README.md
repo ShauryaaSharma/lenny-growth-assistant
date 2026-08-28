@@ -74,7 +74,7 @@ Runs entirely on your machine. No API key required.
 │   ├── architecture.md        # schema, request lifecycle, security, deployment
 │   ├── design.md                # UI/UX principles, states, accessibility
 │   └── test-plan.md              # manual UI test plan
-├── agent-transcripts/         # 12 entries: real defects (incl. 2 live hallucinations) found, fixed
+├── agent-transcripts/         # 13 entries: real defects (incl. 3 live hallucinations) found, fixed
 ├── docker-compose.yml
 └── .env.example
 ```
@@ -99,7 +99,7 @@ For an evaluator checking requirements against implementation directly:
 | 6.3 PRD | [docs/PRD.md](docs/PRD.md) |
 | 6.4 design.md | [docs/design.md](docs/design.md) |
 | 6.5 architecture.md | [docs/architecture.md](docs/architecture.md) |
-| 6.6 Agent transcripts | [agent-transcripts/](agent-transcripts/) -- 12 entries, including 4 real defects found and fixed by running the system live (2 of them live hallucinations caught by the agent harness) and a real grounding-threshold defect caught by the retrieval eval harness |
+| 6.6 Agent transcripts | [agent-transcripts/](agent-transcripts/) -- 13 entries, including 5 real defects found and fixed by running the system live (3 of them live hallucinations, 2 caught by the agent harness and 1 by manual smoke-testing) and a real grounding-threshold defect caught by the retrieval eval harness |
 | 6.7 Tests | 153 automated tests -- see [Testing](#testing) -- plus a 24-question retrieval eval harness and an 8-scenario agent harness ([Evaluation](#evaluation)) and [docs/test-plan.md](docs/test-plan.md) |
 | 6.8 Demo video | Not part of this repository; recorded separately per the submission instructions |
 
@@ -223,7 +223,7 @@ annotated list. The values you are most likely to touch:
 | `LLM_BASE_URL` | HF router | Cloud endpoint |
 | `LLM_MODEL` / `LLM_API_KEY` | — | Cloud model and key |
 | `LLM_FALLBACK_PROVIDER` | `none` | Provider to retry on if the primary is down |
-| `RETRIEVAL_MIN_SIMILARITY` | `0.55` | Grounding floor — raise to decline more readily |
+| `RETRIEVAL_MIN_SIMILARITY` | `0.69` | Grounding floor — raise to decline more readily |
 | `DATABASE_URL` | local Compose | Swap for Supabase/Railway with no code change |
 | `INGEST_ON_STARTUP` | `true` | Auto-seed the corpus on first boot |
 | `LOG_FORMAT` | `console` | `json` for machine-readable logs |

@@ -177,6 +177,25 @@ class TestRefusalLanguage:
         assert scored.correct is False
 
 
+class TestForbiddenReplyPatterns:
+    def test_a_clean_reply_passes(self):
+        turn = ScenarioTurn(message="hi", forbidden_reply_patterns=["[1]", "[2]"])
+        result = FakeAgentResult(content="Hey, how's it going?")
+        scored = score_turn(turn, result)
+        assert scored.checks["no_forbidden_reply_patterns"] is True
+        assert scored.correct is True
+
+    def test_a_fabricated_citation_in_an_ungrounded_reply_fails(self):
+        """Regression guard: 'Hey' once got back a fabricated quote formatted
+        as [1] with an invented guest name, even though no search ran --
+        see agent-transcripts/12."""
+        turn = ScenarioTurn(message="hi", forbidden_reply_patterns=["[1]", "[2]"])
+        result = FakeAgentResult(content='"I made mistakes" - Lenny Russell [1]')
+        scored = score_turn(turn, result)
+        assert scored.checks["no_forbidden_reply_patterns"] is False
+        assert scored.correct is False
+
+
 class TestTurnWithNoExpectations:
     def test_a_turn_with_no_checks_configured_is_trivially_correct(self):
         turn = ScenarioTurn(message="m")
