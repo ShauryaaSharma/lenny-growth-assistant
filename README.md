@@ -1,6 +1,6 @@
 # The Lenny Growth Assistant
 
-![Architecture diagram](docs/architecture_v4.png)
+![Architecture diagram](docs/architecture_v5.png)
 
 A grounded conversational assistant over [Lenny's Podcast](https://www.lennyspodcast.com/)
 transcripts. Ask product and growth questions and get answers cited back to the

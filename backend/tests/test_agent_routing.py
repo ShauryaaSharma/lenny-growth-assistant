@@ -644,3 +644,28 @@ class TestTrivialDetection:
     )
     def test_substantive_messages(self, msg: str):
         assert is_trivial(msg) is False
+
+    @pytest.mark.parametrize(
+        "msg",
+        ["what you doin?", "whats up", "how are you", "wyd", "nothing much", "good morning"],
+    )
+    def test_small_talk_skips_retrieval(self, msg: str):
+        """Regression guard for agent-transcripts/13: "What you doin?" was
+        routed as a substantive question, searched the whole corpus, and
+        answered small talk with a domain refusal after 30 seconds."""
+        assert is_trivial(msg) is True
+
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            "how are you going to measure retention?",
+            "what you doing about churn in B2B SaaS?",
+            "how is it going to scale past 100k users?",
+            "whats up with PMF for marketplaces?",
+        ],
+    )
+    def test_questions_that_merely_begin_like_small_talk_still_retrieve(self, msg: str):
+        """SMALL_TALK_EXACT must match whole messages only. Prefix-matching it
+        the way TRIVIAL_PATTERNS are matched would skip retrieval on every one
+        of these -- a worse bug than the one it fixes."""
+        assert is_trivial(msg) is False

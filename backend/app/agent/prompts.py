@@ -128,10 +128,31 @@ def wants_artifact(message: str) -> bool:
     return any(p in normalized for p in ARTIFACT_PATTERNS)
 
 
-# Messages that legitimately need no retrieval.
+# Messages that legitimately need no retrieval. Matched as an exact string OR
+# as a prefix ("thanks a lot", "hi there"), so keep this list to openers that
+# cannot begin a real product question.
 TRIVIAL_PATTERNS = (
     "hi", "hey", "hello", "thanks", "thank you", "ok", "okay", "cool",
     "who are you", "what can you do", "help", "what is this",
+)
+
+# Small talk matched ONLY as a whole message, never as a prefix. These read as
+# conversational filler on their own but are also common openings to genuine
+# questions -- "how are you going to measure retention?" must still retrieve,
+# so prefix-matching these (the way TRIVIAL_PATTERNS are matched) would skip
+# retrieval on real questions. Found live: "What you doin?" was routed as a
+# substantive question, searched the corpus, found nothing above the grounding
+# floor, and answered small talk with "Lenny's Podcast transcripts do not
+# cover this topic" after 30s of retrieval -- see agent-transcripts/13.
+SMALL_TALK_EXACT = (
+    "whats up", "what's up", "sup", "wassup", "yo",
+    "how are you", "how r u", "how are you doing", "how you doing",
+    "hows it going", "how's it going", "how is it going",
+    "what you doin", "what you doing", "what are you doing", "wyd",
+    "good morning", "good afternoon", "good evening", "good night",
+    "nothing much", "not much", "nvm", "nevermind", "never mind",
+    "lol", "haha", "nice", "great", "awesome", "got it", "sounds good",
+    "bye", "goodbye", "see ya", "see you", "later",
 )
 
 
@@ -139,5 +160,7 @@ def is_trivial(message: str) -> bool:
     """True for greetings and meta questions that should skip retrieval."""
     normalized = message.strip().lower().rstrip("?!.")
     if len(normalized) <= 3:
+        return True
+    if normalized in SMALL_TALK_EXACT:
         return True
     return any(normalized == p or normalized.startswith(p + " ") for p in TRIVIAL_PATTERNS)
