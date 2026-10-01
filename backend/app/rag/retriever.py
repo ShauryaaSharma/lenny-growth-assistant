@@ -22,6 +22,7 @@ answering from the model's parametric memory.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 
@@ -174,7 +175,10 @@ async def search(
     if not query:
         return RetrievalResult(query=query, grounded=False, reason="empty_query")
 
-    qvec = embed_query(query)
+    # ONNX inference is synchronous and CPU-bound. Run inline, it blocks the
+    # event loop and every concurrent request -- /health included -- queues
+    # behind it; the load test measured p95 2.0 s on endpoints that never embed.
+    qvec = await asyncio.to_thread(embed_query, query)
     rows = (
         await db.execute(
             _SEARCH_SQL,
