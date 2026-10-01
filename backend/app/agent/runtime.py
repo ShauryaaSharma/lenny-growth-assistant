@@ -46,7 +46,9 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -82,6 +84,45 @@ MAX_HISTORY_MESSAGES = 20  # sliding window; keeps small models inside their con
 _SYSTEM_PROMPT_WITH_MEMORY = render_primary_for_system_prompt() + "\n\n" + SYSTEM_PROMPT
 
 
+EventSink = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+async def _emit(sink: EventSink | None, event: dict[str, Any]) -> None:
+    """Report progress to a streaming caller. Best-effort by design: a
+    client that went away must not abort a turn that is still being paid
+    for and will still be saved."""
+    if sink is None:
+        return
+    try:
+        await sink(event)
+    except Exception:  # noqa: BLE001
+        log.warning("progress_event_dropped", event_type=event.get("type"))
+
+
+def _describe_call(name: str, args: dict[str, Any]) -> str:
+    """The one argument worth showing a user for each tool."""
+    key = {"search_transcripts": "query", "write_ship30_essay": "topic",
+           "create_artifact": "title"}.get(name)
+    return str(args.get(key) or "")[:200] if key else ""
+
+
+def _summarize_result(name: str, result: dict[str, Any]) -> str:
+    """What a tool call achieved, in a few words, for the progress feed."""
+    if "error" in result:
+        return "failed"
+    if name == "search_transcripts":
+        if not result.get("grounded"):
+            return "nothing relevant found"
+        hits = result.get("results") or []
+        episodes = len({r.get("episode") for r in hits})
+        return (f"{len(hits)} passage{'s' * (len(hits) != 1)} from "
+                f"{episodes} episode{'s' * (episodes != 1)}")
+    if result.get("artifact_created"):
+        words = f" ({result['word_count']:,} words)" if result.get("word_count") else ""
+        return f"created “{result.get('title', 'document')}”{words}"
+    return "done"
+
+
 @dataclass
 class AgentResult:
     content: str
@@ -100,8 +141,15 @@ async def run_agent(
     session_id: uuid.UUID,
     user_message: str,
     history: list[ChatMessage],
+    on_event: EventSink | None = None,
 ) -> AgentResult:
-    """Run one conversational turn to completion."""
+    """Run one conversational turn to completion.
+
+    `on_event` receives progress as the turn runs -- each model call, each
+    tool call and what it found, each guard that fires -- for the streaming
+    endpoint. Never draft answer text: a draft may still be rejected by the
+    guards below, and streaming it would show the user exactly the
+    ungrounded content they exist to stop."""
     started = time.perf_counter()
     ctx = ToolContext(db=db, session_id=session_id)
     turn_id = str(uuid.uuid4())  # groups this turn's spans in the trace store
@@ -132,6 +180,7 @@ async def run_agent(
     tool_specs = None if not needs_grounding else TOOL_SPECS
 
     for iterations in range(1, MAX_ITERATIONS + 1):
+        await _emit(on_event, {"type": "thinking", "iteration": iterations})
         with trace.Timer() as t:
             response = await chat_with_fallback(messages, tools=tool_specs)
         provider, model = response.provider, response.model
@@ -152,6 +201,7 @@ async def run_agent(
                     # A second content-creating call in the same turn.
                     log.info("blocking_redundant_artifact", session_id=str(session_id), tool=call.name)
                     result = {"error": BLOCKED_REDUNDANT_ARTIFACT}
+                    await _emit(on_event, {"type": "guard", "guard": "redundant_artifact"})
                     ctx.tool_log.append(
                         {"tool": call.name, "args": call.arguments, "ok": False, "latency_ms": 0}
                     )
@@ -166,6 +216,7 @@ async def run_agent(
                     # directly and fabricates content into a document instead.
                     log.info("blocking_ungrounded_artifact", session_id=str(session_id))
                     result = {"error": BLOCKED_UNGROUNDED_ARTIFACT}
+                    await _emit(on_event, {"type": "guard", "guard": "ungrounded_artifact"})
                     ctx.tool_log.append(
                         {"tool": call.name, "args": call.arguments, "ok": False, "latency_ms": 0}
                     )
@@ -174,8 +225,13 @@ async def run_agent(
                         name=call.name, duration_ms=0, ok=False, meta={"blocked": "ungrounded_artifact"},
                     ))
                 else:
+                    await _emit(on_event, {"type": "tool_start", "tool": call.name,
+                                           "detail": _describe_call(call.name, call.arguments)})
                     result = await execute_tool(ctx, call.name, call.arguments)
                     logged = ctx.tool_log[-1]
+                    await _emit(on_event, {"type": "tool_end", "tool": call.name,
+                                           "ok": logged["ok"], "latency_ms": logged["latency_ms"],
+                                           "summary": _summarize_result(call.name, result)})
                     await trace.record_span(trace.Span(
                         session_id=str(session_id), request_id=turn_id, kind="tool_call",
                         name=call.name, duration_ms=logged["latency_ms"], ok=logged["ok"],
@@ -214,6 +270,7 @@ async def run_agent(
         # extra iteration before the turn could finish.
         if needs_grounding and not ctx.searched and not nudged and not artifact_reminder_sent:
             log.info("forcing_retrieval", session_id=str(session_id))
+            await _emit(on_event, {"type": "guard", "guard": "forced_retrieval"})
             nudged = True
             messages.append(ChatMessage(role="assistant", content=response.content))
             messages.append(ChatMessage(role="user", content=FORCE_SEARCH_NUDGE))
@@ -221,6 +278,7 @@ async def run_agent(
 
         if ctx.searched and not ctx.grounded and not ungrounded_guard_fired:
             log.info("appending_ungrounded_guard", session_id=str(session_id))
+            await _emit(on_event, {"type": "guard", "guard": "ungrounded"})
             messages.append(ChatMessage(role="assistant", content=response.content))
             messages.append(ChatMessage(role="user", content=UNGROUNDED_GUARD))
             ungrounded_guard_fired = True  # fires once; next answer is accepted
@@ -235,6 +293,7 @@ async def run_agent(
             and (not ctx.searched or ctx.grounded)
         ):
             log.info("forcing_artifact_creation", session_id=str(session_id))
+            await _emit(on_event, {"type": "guard", "guard": "artifact_nudge"})
             artifact_nudged = True
             messages.append(ChatMessage(role="assistant", content=response.content))
             messages.append(ChatMessage(role="user", content=FORCE_ARTIFACT_NUDGE))

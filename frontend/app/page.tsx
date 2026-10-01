@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ArtifactViewer from "@/components/ArtifactViewer";
 import Composer from "@/components/Composer";
 import MessageBubble from "@/components/MessageBubble";
+import ProgressFeed, { type ProgressStep, applyProgress } from "@/components/ProgressFeed";
 import SessionSidebar from "@/components/SessionSidebar";
 import { ApiError, api } from "@/lib/api";
 import type {
@@ -25,6 +26,7 @@ export default function Home() {
   const [messageArtifacts, setMessageArtifacts] = useState<Record<string, string[]>>({});
   const [openArtifactId, setOpenArtifactId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<ProgressStep[]>([]);
   const [error, setError] = useState<ApiError | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [booting, setBooting] = useState(true);
@@ -100,12 +102,13 @@ export default function Home() {
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, busy]);
+  }, [messages, busy, progress]);
 
   async function handleSend(text: string) {
     if (!activeId) return;
     setError(null);
     setBusy(true);
+    setProgress([]);
 
     // Optimistic user turn so the UI responds instantly even when a local model
     // takes 30+ seconds to answer.
@@ -122,7 +125,9 @@ export default function Home() {
     setMessages((m) => [...m, optimistic]);
 
     try {
-      const res = await api.sendMessage(activeId, text);
+      const res = await api.streamMessage(activeId, text, (event) =>
+        setProgress((steps) => applyProgress(steps, event)),
+      );
       setMessages((m) => [...m, res.message]);
 
       if (res.artifacts.length > 0) {
@@ -142,11 +147,15 @@ export default function Home() {
       if (e instanceof ApiError) {
         setError(e);
         // Roll the optimistic turn back — the server never stored it if the
-        // request failed before persistence.
-        setMessages((m) => m.filter((msg) => msg.id !== optimistic.id));
+        // request failed before persistence. A dropped stream is different:
+        // the turn was stored and is still being answered server-side.
+        if (e.code !== "stream_interrupted") {
+          setMessages((m) => m.filter((msg) => msg.id !== optimistic.id));
+        }
       }
     } finally {
       setBusy(false);
+      setProgress([]);
     }
   }
 
@@ -293,15 +302,18 @@ export default function Home() {
 
               {busy && (
                 <div className="flex justify-start" role="status" aria-live="polite">
-                  <div className="flex items-center gap-1.5 rounded-2xl rounded-bl-sm bg-surface px-4 py-3 shadow-sm ring-1 ring-gray-100">
-                    {[0, 1, 2].map((i) => (
-                      <span
-                        key={i}
-                        className="dot h-1.5 w-1.5 rounded-full bg-ink-muted"
-                        style={{ animationDelay: `${i * 0.15}s` }}
-                      />
-                    ))}
-                    <span className="sr-only">The assistant is thinking</span>
+                  <div className="rounded-2xl rounded-bl-sm bg-surface px-4 py-3 shadow-sm ring-1 ring-gray-100">
+                    <div className="flex items-center gap-1.5">
+                      {[0, 1, 2].map((i) => (
+                        <span
+                          key={i}
+                          className="dot h-1.5 w-1.5 rounded-full bg-ink-muted"
+                          style={{ animationDelay: `${i * 0.15}s` }}
+                        />
+                      ))}
+                      <span className="sr-only">The assistant is thinking</span>
+                    </div>
+                    <ProgressFeed steps={progress} />
                   </div>
                 </div>
               )}

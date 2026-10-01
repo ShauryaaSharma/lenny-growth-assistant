@@ -45,6 +45,16 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             raise
 
 
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """FastAPI dependency for work that outlives the request's own session.
+
+    A streamed response keeps running after the endpoint returns, and a
+    `get_db` session is closed by then, so the streaming chat opens its own
+    sessions from this. A dependency rather than a direct call so tests can
+    point it at the test database the same way they override `get_db`."""
+    return get_sessionmaker()
+
+
 async def check_database() -> tuple[bool, str]:
     """Liveness probe used by /health/deep. Never raises."""
     try:
