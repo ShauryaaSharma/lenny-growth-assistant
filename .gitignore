@@ -38,3 +38,6 @@ Thumbs.db
 
 # Claude Code local session state
 .claude/
+
+# Load test output
+backend/loadtests/results/

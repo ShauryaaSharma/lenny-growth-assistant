@@ -58,8 +58,15 @@ def _database_available() -> bool:
         return False
 
 
+_DB_AVAILABLE = _database_available()
+
+# Skipping is right on a laptop, wrong in CI: a misconfigured service container
+# would otherwise turn every database test into a silent green skip.
+if not _DB_AVAILABLE and os.getenv("REQUIRE_TEST_DB") == "1":
+    raise pytest.UsageError("REQUIRE_TEST_DB=1 but TEST_DATABASE_URL is not reachable")
+
 requires_db = pytest.mark.skipif(
-    not _database_available(),
+    not _DB_AVAILABLE,
     reason=(
         "No test database. Start one with `docker compose up -d postgres` and create "
         "it with: docker compose exec postgres createdb -U lenny lenny_test"

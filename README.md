@@ -1,5 +1,7 @@
 # The Lenny Growth Assistant
 
+[![CI](https://github.com/ShauryaaSharma/lenny-growth-assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/ShauryaaSharma/lenny-growth-assistant/actions/workflows/ci.yml)
+
 ![Architecture diagram](docs/architecture_v6.png)
 
 A grounded conversational assistant over [Lenny's Podcast](https://www.lennyspodcast.com/)
@@ -61,7 +63,7 @@ Runs entirely on your machine. No API key required.
 │   │   ├── skills/ship30/             # principles.md (data) + skill.py (pipeline)
 │   │   ├── config.py, logging.py, main.py
 │   ├── alembic/                # one migration: the full schema
-│   ├── tests/                  # 153 tests -- see docs/architecture.md#testing-strategy
+│   ├── tests/                  # 219 tests -- see docs/architecture.md#testing-strategy
 │   └── Dockerfile, requirements*.txt
 ├── frontend/
 │   ├── app/                  # Next.js app router: layout, page, global styles
@@ -100,7 +102,7 @@ For an evaluator checking requirements against implementation directly:
 | 6.4 design.md | [docs/design.md](docs/design.md) |
 | 6.5 architecture.md | [docs/architecture.md](docs/architecture.md) |
 | 6.6 Agent transcripts | [agent-transcripts/](agent-transcripts/) -- 13 entries, including 5 real defects found and fixed by running the system live (3 of them live hallucinations, 2 caught by the agent harness and 1 by manual smoke-testing) and a real grounding-threshold defect caught by the retrieval eval harness |
-| 6.7 Tests | 153 automated tests -- see [Testing](#testing) -- plus a 24-question retrieval eval harness and an 8-scenario agent harness ([Evaluation](#evaluation)) and [docs/test-plan.md](docs/test-plan.md) |
+| 6.7 Tests | 219 automated tests, run in CI on every push -- see [Testing](#testing) -- plus a 24-question retrieval eval harness and an 8-scenario agent harness ([Evaluation](#evaluation)) and [docs/test-plan.md](docs/test-plan.md) |
 | 6.8 Demo video | Not part of this repository; recorded separately per the submission instructions |
 
 ---
@@ -296,6 +298,29 @@ docker compose exec postgres createdb -U lenny lenny_test
 Tests skip with a clear reason when no database is reachable, so `pytest` stays
 useful on a bare laptop. The manual UI test plan is in
 [docs/test-plan.md](docs/test-plan.md).
+
+**What the suite covers** (219 tests):
+
+| Layer | Where | What it pins down |
+|---|---|---|
+| Unit | `test_chunking.py`, `test_sanitize.py`, `test_memory.py`, `test_ship30_skill.py` | Chunk boundaries, HTML/Markdown sanitisation, reducers and the SQLite trace store, essay pipeline |
+| Agent routing | `test_agent_routing.py` | Search-before-answer, ungrounded and redundant-artifact guards, with a scripted model |
+| Eval scoring | `test_eval_harness.py`, `test_agent_eval_harness.py` | The harnesses' own rate, precision and pass/fail arithmetic |
+| Integration | `test_retriever.py`, `test_sessions.py` | Hybrid retrieval and session isolation against real Postgres + pgvector |
+| API | `test_api.py` | Every endpoint over HTTP: status codes, validation boundaries, the typed error envelope, persistence across a full chat turn, and the user's turn surviving an LLM outage |
+
+**CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the full suite
+on every push and pull request against a `pgvector/pgvector:pg16` service
+container, checks that the Alembic migration applies and rolls back on an empty
+database, and publishes JUnit results. It sets `REQUIRE_TEST_DB=1`, so a broken
+database fails the build instead of skipping the integration tests.
+
+**Load tests** ([`backend/loadtests/`](backend/loadtests/README.md)) run a
+Locust traffic mix against the API and exit non-zero past a p95 or error-rate
+limit. The first run found the query embedding blocking the event loop under
+concurrency; moving it to a worker thread cut median latency at 100 users from
+200 ms to 24 ms and raised throughput from 53.6 to 68.1 req/s. Setup and full
+before/after numbers are in that README.
 
 ### Evaluation
 

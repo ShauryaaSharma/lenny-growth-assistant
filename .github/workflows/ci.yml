@@ -1,0 +1,92 @@
+name: CI
+
+# Runs the whole backend suite on every push and PR, against the same
+# Postgres + pgvector image docker-compose uses. The database tests are the
+# ones that matter most here (hybrid retrieval is Postgres-specific SQL), so
+# REQUIRE_TEST_DB makes a broken service container fail the build instead of
+# quietly skipping them.
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: backend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: lenny
+          POSTGRES_PASSWORD: lenny_dev_password
+          POSTGRES_DB: lenny_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lenny -d lenny_test"
+          --health-interval 3s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      TEST_DATABASE_URL: postgresql+asyncpg://lenny:lenny_dev_password@localhost:5432/lenny_test
+      REQUIRE_TEST_DB: "1"
+      # The default /data paths are container volumes; on a runner they are
+      # not writable.
+      EMBEDDING_CACHE_DIR: ${{ github.workspace }}/.cache/fastembed
+      TRACE_DB_PATH: ${{ github.workspace }}/.cache/traces.db
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: .cache/fastembed
+          key: fastembed-${{ hashFiles('backend/app/config.py') }}
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      # Strict on the test code this workflow introduced. The rest of the tree
+      # has pre-existing findings that belong in their own cleanup change.
+      - name: Lint
+        run: ruff check tests/test_api.py tests/conftest.py loadtests
+
+      - name: Migrations apply to an empty database
+        env:
+          DATABASE_URL: postgresql+asyncpg://lenny:lenny_dev_password@localhost:5432/lenny_test
+        run: |
+          alembic upgrade head
+          alembic downgrade base
+
+      - name: Tests
+        run: python -m pytest -q -rs --junitxml=${{ runner.temp }}/junit.xml
+
+      - name: Publish test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit
+          path: ${{ runner.temp }}/junit.xml
+          retention-days: 14
