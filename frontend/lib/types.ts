@@ -97,3 +97,18 @@ export interface ApiErrorBody {
     fields?: { loc: string; msg: string }[];
   };
 }
+
+/** Progress from POST /api/sessions/{id}/chat/stream, before the answer. */
+export type ProgressEvent =
+  | { type: "thinking"; iteration: number }
+  | { type: "tool_start"; tool: string; detail: string }
+  | { type: "tool_end"; tool: string; ok: boolean; latency_ms: number; summary: string }
+  | {
+      type: "guard";
+      guard:
+        | "forced_retrieval"
+        | "ungrounded"
+        | "artifact_nudge"
+        | "ungrounded_artifact"
+        | "redundant_artifact";
+    };
