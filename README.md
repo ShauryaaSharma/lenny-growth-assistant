@@ -34,6 +34,7 @@ Runs entirely on your machine. No API key required.
 | Capability | Notes |
 |---|---|
 | **Grounded Q&A** | Hybrid retrieval over 303 episodes. Every answer cites episode, guest, and a timestamped YouTube deep link. |
+| **Guest and date filters** | "What did Casey Winters say about retention since 2023?" narrows the search to that guest and period -- inside both retrieval arms, so other guests can't crowd them out -- and says plainly when no episode matches. |
 | **Honest refusal** | If nothing in the corpus clears the relevance floor, it says so instead of answering from the model's own knowledge. |
 | **Ship 30 essays** | A ~1,250-word essay skill with encoded writing principles and a programmatic quality gate. |
 | **Artifacts** | Markdown or HTML/CSS documents rendered in a sandboxed panel beside the chat. |
@@ -63,7 +64,7 @@ Runs entirely on your machine. No API key required.
 │   │   ├── skills/ship30/             # principles.md (data) + skill.py (pipeline)
 │   │   ├── config.py, logging.py, main.py
 │   ├── alembic/                # one migration: the full schema
-│   ├── tests/                  # 219 tests -- see docs/architecture.md#testing-strategy
+│   ├── tests/                  # 272 tests -- see docs/architecture.md#testing-strategy
 │   └── Dockerfile, requirements*.txt
 ├── frontend/
 │   ├── app/                  # Next.js app router: layout, page, global styles
@@ -102,7 +103,7 @@ For an evaluator checking requirements against implementation directly:
 | 6.4 design.md | [docs/design.md](docs/design.md) |
 | 6.5 architecture.md | [docs/architecture.md](docs/architecture.md) |
 | 6.6 Agent transcripts | [agent-transcripts/](agent-transcripts/) -- 13 entries, including 5 real defects found and fixed by running the system live (3 of them live hallucinations, 2 caught by the agent harness and 1 by manual smoke-testing) and a real grounding-threshold defect caught by the retrieval eval harness |
-| 6.7 Tests | 219 automated tests, run in CI on every push -- see [Testing](#testing) -- plus a 24-question retrieval eval harness and an 8-scenario agent harness ([Evaluation](#evaluation)) and [docs/test-plan.md](docs/test-plan.md) |
+| 6.7 Tests | 272 automated tests, run in CI on every push -- see [Testing](#testing) -- plus a 24-question retrieval eval harness and an 8-scenario agent harness ([Evaluation](#evaluation)) and [docs/test-plan.md](docs/test-plan.md) |
 | 6.8 Demo video | Not part of this repository; recorded separately per the submission instructions |
 
 ---
@@ -299,15 +300,15 @@ Tests skip with a clear reason when no database is reachable, so `pytest` stays
 useful on a bare laptop. The manual UI test plan is in
 [docs/test-plan.md](docs/test-plan.md).
 
-**What the suite covers** (219 tests):
+**What the suite covers** (272 tests):
 
 | Layer | Where | What it pins down |
 |---|---|---|
 | Unit | `test_chunking.py`, `test_sanitize.py`, `test_memory.py`, `test_ship30_skill.py` | Chunk boundaries, HTML/Markdown sanitisation, reducers and the SQLite trace store, essay pipeline |
 | Agent routing | `test_agent_routing.py` | Search-before-answer, ungrounded and redundant-artifact guards, with a scripted model |
 | Eval scoring | `test_eval_harness.py`, `test_agent_eval_harness.py` | The harnesses' own rate, precision and pass/fail arithmetic |
-| Integration | `test_retriever.py`, `test_sessions.py` | Hybrid retrieval and session isolation against real Postgres + pgvector |
-| API | `test_api.py` | Every endpoint over HTTP: status codes, validation boundaries, the typed error envelope, persistence across a full chat turn, and the user's turn surviving an LLM outage |
+| Integration | `test_retriever.py`, `test_search_filters.py`, `test_sessions.py` | Hybrid retrieval, guest and date filters, and session isolation against real Postgres + pgvector |
+| API | `test_api.py`, `test_chat_stream.py` | Every endpoint over HTTP: status codes, validation boundaries, the typed error envelope, persistence across a full chat turn, and the user's turn surviving an LLM outage |
 
 **CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the full suite
 on every push and pull request against a `pgvector/pgvector:pg16` service

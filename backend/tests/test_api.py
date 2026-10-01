@@ -248,7 +248,7 @@ class TestSearchEndpoint:
         chunk = make_chunk()
         captured = {}
 
-        async def fake_search(db, query, top_k):
+        async def fake_search(db, query, top_k, filters=None):
             captured.update(query=query, top_k=top_k)
             return RetrievalResult(
                 chunks=[chunk], query=query, grounded=True, best_similarity=0.712345, latency_ms=17
@@ -275,7 +275,7 @@ class TestSearchEndpoint:
     async def test_defaults_top_k_to_eight(self, api, monkeypatch):
         captured = {}
 
-        async def fake_search(db, query, top_k):
+        async def fake_search(db, query, top_k, filters=None):
             captured["top_k"] = top_k
             return RetrievalResult(query=query)
 

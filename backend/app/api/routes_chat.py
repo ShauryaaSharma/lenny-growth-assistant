@@ -26,7 +26,7 @@ from app.db.models import Artifact, Message
 from app.db.session import get_db, get_session_factory
 from app.llm.base import ChatMessage, LLMError
 from app.logging import get_logger, request_id_ctx
-from app.rag.retriever import search
+from app.rag.retriever import SearchFilters, search
 from app.schemas.api import (
     ArtifactOut,
     ChatRequest,
@@ -240,7 +240,9 @@ async def debug_search(
     Exists so an operator can answer "is this a retrieval problem or a model
     problem?" in one request. That distinction is most of RAG debugging.
     """
-    result = await search(db, payload.query, top_k=payload.top_k)
+    filters = SearchFilters(guest=(payload.guest or "").strip() or None,
+                            since=payload.since, until=payload.until)
+    result = await search(db, payload.query, top_k=payload.top_k, filters=filters)
     return SearchResponse(
         query=result.query,
         grounded=result.grounded,

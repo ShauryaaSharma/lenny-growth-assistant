@@ -18,13 +18,24 @@ therefore keys off raw cosine similarity, which *is* an absolute relevance
 signal: if nothing clears `retrieval_min_similarity`, the caller is told the
 corpus does not cover the question and the agent must say so rather than
 answering from the model's parametric memory.
+
+**Filters.** A guest or date range narrows *both* arms before their
+candidate pools are cut, never the fused result afterwards: post-filtering
+30 candidates for "what did Casey Winters say" keeps only whichever of them
+happen to be his, often none. With a filter the vector arm also orders by
+exact distance instead of the HNSW index -- an approximate index scan under
+a selective WHERE returns far fewer rows than asked for, and an exact scan
+over one guest's chunks is cheap.
 """
 
 from __future__ import annotations
 
 import asyncio
+import calendar
+import re
 import time
 from dataclasses import dataclass, field
+from datetime import date
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,6 +48,77 @@ log = get_logger(__name__)
 
 RRF_K = 60  # standard RRF damping constant
 CANDIDATE_POOL = 30  # per-arm candidates before fusion
+
+_PARTIAL_DATE = re.compile(r"^(\d{4})(?:-(\d{1,2}))?(?:-(\d{1,2}))?$")
+
+
+def parse_date_bound(value: str | date | None, *, end: bool = False) -> date | None:
+    """`2023`, `2023-05` or `2023-05-17` as a range bound. A partial date
+    means its whole period: as `since` it is the first day, as `until` the
+    last, so "until 2023" includes December. Models and people both write
+    years far more often than full dates. Raises ValueError otherwise."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, date):
+        return value
+    m = _PARTIAL_DATE.match(str(value).strip())
+    if not m:
+        raise ValueError(f"not a date: {value!r} (use YYYY, YYYY-MM or YYYY-MM-DD)")
+    year, month, day = int(m.group(1)), m.group(2), m.group(3)
+    if month is None:
+        return date(year, 12, 31) if end else date(year, 1, 1)
+    if day is None:
+        last = calendar.monthrange(year, int(month))[1]
+        return date(year, int(month), last if end else 1)
+    return date(year, int(month), int(day))
+
+
+@dataclass(frozen=True)
+class SearchFilters:
+    """Narrow a search to one guest and/or a publish-date range."""
+
+    guest: str | None = None
+    since: date | None = None
+    until: date | None = None
+
+    def __post_init__(self) -> None:
+        if self.since and self.until and self.since > self.until:
+            raise ValueError(f"since ({self.since}) is after until ({self.until})")
+
+    @classmethod
+    def parse(cls, guest: str | None = None, since: str | date | None = None,
+              until: str | date | None = None) -> SearchFilters:
+        return cls(guest=(guest or "").strip() or None,
+                   since=parse_date_bound(since), until=parse_date_bound(until, end=True))
+
+    @property
+    def active(self) -> bool:
+        return bool(self.guest or self.since or self.until)
+
+    def describe(self) -> str:
+        parts = [self.guest] if self.guest else []
+        if self.since and self.until:
+            parts.append(f"{self.since} to {self.until}")
+        elif self.since:
+            parts.append(f"since {self.since}")
+        elif self.until:
+            parts.append(f"until {self.until}")
+        return ", ".join(parts)
+
+    def where(self) -> tuple[str, dict]:
+        """SQL conditions on episodes `e`, and their parameters."""
+        conditions, params = [], {}
+        if self.guest:
+            escaped = self.guest.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+            conditions.append(r"e.guest ILIKE :guest ESCAPE '\'")
+            params["guest"] = f"%{escaped}%"
+        if self.since:
+            conditions.append("e.publish_date >= :since")
+            params["since"] = self.since
+        if self.until:
+            conditions.append("e.publish_date <= :until")
+            params["until"] = self.until
+        return " AND ".join(conditions), params
 
 
 @dataclass
@@ -115,15 +197,14 @@ class RetrievalResult:
         return "\n\n---\n\n".join(parts)
 
 
-_SEARCH_SQL = text(
-    """
+_SEARCH_TEMPLATE = """
     WITH vector_arm AS (
         SELECT c.id,
                1 - (c.embedding <=> CAST(:qvec AS vector)) AS similarity,
-               ROW_NUMBER() OVER (ORDER BY c.embedding <=> CAST(:qvec AS vector)) AS rank
-        FROM chunks c
-        WHERE c.embedding IS NOT NULL AND c.is_sponsor = FALSE
-        ORDER BY c.embedding <=> CAST(:qvec AS vector)
+               ROW_NUMBER() OVER (ORDER BY {distance}) AS rank
+        FROM chunks c{episode_join}
+        WHERE c.embedding IS NOT NULL AND c.is_sponsor = FALSE{filters}
+        ORDER BY {distance}
         LIMIT :pool
     ),
     text_arm AS (
@@ -132,8 +213,8 @@ _SEARCH_SQL = text(
                ROW_NUMBER() OVER (
                    ORDER BY ts_rank(c.tsv, plainto_tsquery('english', :qtext)) DESC
                ) AS rank
-        FROM chunks c
-        WHERE c.tsv @@ plainto_tsquery('english', :qtext) AND c.is_sponsor = FALSE
+        FROM chunks c{episode_join}
+        WHERE c.tsv @@ plainto_tsquery('english', :qtext) AND c.is_sponsor = FALSE{filters}
         LIMIT :pool
     ),
     fused AS (
@@ -154,7 +235,22 @@ _SEARCH_SQL = text(
     ORDER BY f.rrf_score DESC
     LIMIT :top_k
     """
-)
+
+_DISTANCE = "c.embedding <=> CAST(:qvec AS vector)"
+
+# Unfiltered: the operator expression exactly as indexed, so the planner
+# can walk the HNSW index.
+_SEARCH_SQL = text(_SEARCH_TEMPLATE.format(distance=_DISTANCE, episode_join="", filters=""))
+
+
+def _filtered_search_sql(conditions: str):
+    # `+ 0` stops the planner matching the HNSW index: an approximate index
+    # scan under a selective WHERE returns too few rows (see module docstring).
+    return text(_SEARCH_TEMPLATE.format(
+        distance=f"({_DISTANCE}) + 0",
+        episode_join=" JOIN episodes e ON e.id = c.episode_id",
+        filters=f" AND {conditions}",
+    ))
 
 
 async def search(
@@ -162,6 +258,7 @@ async def search(
     query: str,
     top_k: int | None = None,
     min_similarity: float | None = None,
+    filters: SearchFilters | None = None,
 ) -> RetrievalResult:
     """Hybrid search. Never raises on an empty corpus -- returns ungrounded."""
     settings = get_settings()
@@ -175,19 +272,32 @@ async def search(
     if not query:
         return RetrievalResult(query=query, grounded=False, reason="empty_query")
 
+    sql, filter_params = _SEARCH_SQL, {}
+    if filters and filters.active:
+        conditions, filter_params = filters.where()
+        # Said apart from "nothing relevant": "there is no such guest" is a
+        # different answer from "they never talked about that".
+        matching = (await db.execute(
+            text(f"SELECT count(*) FROM episodes e WHERE {conditions}"), filter_params
+        )).scalar_one()
+        if not matching:
+            return RetrievalResult(query=query, grounded=False, reason="no_matching_episodes")
+        sql = _filtered_search_sql(conditions)
+
     # ONNX inference is synchronous and CPU-bound. Run inline, it blocks the
     # event loop and every concurrent request -- /health included -- queues
     # behind it; the load test measured p95 2.0 s on endpoints that never embed.
     qvec = await asyncio.to_thread(embed_query, query)
     rows = (
         await db.execute(
-            _SEARCH_SQL,
+            sql,
             {
                 "qvec": str(qvec),
                 "qtext": query,
                 "pool": CANDIDATE_POOL,
                 "rrf_k": RRF_K,
                 "top_k": top_k,
+                **filter_params,
             },
         )
     ).mappings().all()
