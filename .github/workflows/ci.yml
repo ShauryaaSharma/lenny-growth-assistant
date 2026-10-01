@@ -46,7 +46,7 @@ jobs:
       # The default /data paths are container volumes; on a runner they are
       # not writable.
       EMBEDDING_CACHE_DIR: ${{ github.workspace }}/.cache/fastembed
-      TRACE_DB_PATH: ${{ runner.temp }}/traces.db
+      TRACE_DB_PATH: ${{ github.workspace }}/.cache/traces.db
 
     steps:
       - uses: actions/checkout@v4
