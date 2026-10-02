@@ -8,10 +8,10 @@ has exactly one shape to handle, and every error carries a machine-readable
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # ---------------------------------------------------------------- errors
 
@@ -174,6 +174,16 @@ class ConfigResponse(BaseModel):
 class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=1000)
     top_k: int = Field(default=8, ge=1, le=25)
+    guest: str | None = Field(default=None, max_length=200,
+                              description="Only this guest's episodes (case-insensitive, partial)")
+    since: date | None = Field(default=None, description="Earliest publish date")
+    until: date | None = Field(default=None, description="Latest publish date")
+
+    @model_validator(mode="after")
+    def range_is_ordered(self) -> SearchRequest:
+        if self.since and self.until and self.since > self.until:
+            raise ValueError("since must not be after until")
+        return self
 
 
 class SearchResponse(BaseModel):

@@ -14,16 +14,18 @@ plus side-effects recorded on the ToolContext for the API layer to persist.
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.llm.base import ToolSpec
 from app.logging import get_logger
-from app.rag.retriever import search
+from app.rag.retriever import SearchFilters, search
 from app.security.sanitize import sanitize_artifact
 from app.skills.ship30.skill import write_ship30_essay
 
@@ -52,6 +54,9 @@ class ToolContext:
     tool_log: list[dict] = field(default_factory=list)
     grounded: bool = False
     searched: bool = False
+    # The user's own words this turn, for guards that should not depend on
+    # the model having relayed them (see guest_named_in).
+    user_message: str = ""
 
     def add_citations(self, new: list[dict]) -> None:
         """Merge, preserving order and de-duplicating by chunk."""
@@ -81,7 +86,25 @@ TOOL_SPECS: list[ToolSpec] = [
                         "conversation (e.g. 'how does he suggest hiring PMs' -> "
                         "'hiring product managers first PM hire')."
                     ),
-                }
+                },
+                "guest": {
+                    "type": "string",
+                    "description": (
+                        "Only when the user asks what a specific guest said: their name, "
+                        "e.g. 'Casey Winters'. Leave out otherwise."
+                    ),
+                },
+                "since": {
+                    "type": "string",
+                    "description": (
+                        "Only when the user limits by time: earliest publish date, as "
+                        "YYYY, YYYY-MM or YYYY-MM-DD (e.g. 'since 2023' -> '2023')."
+                    ),
+                },
+                "until": {
+                    "type": "string",
+                    "description": "Latest publish date, same format as `since`.",
+                },
             },
             "required": ["query"],
         },
@@ -140,17 +163,79 @@ TOOL_SPECS: list[ToolSpec] = [
 TOOL_SPECS_BY_NAME = {t.name: t for t in TOOL_SPECS}
 
 
+_GUEST_SPLIT = re.compile(r"\s*(?:\+|,|&|\band\b)\s*")
+
+
+def match_guest_names(message: str, guests: list[str]) -> list[str]:
+    """Known guests named in full in `message`. An episode's guest field may
+    list several people ("A + B"); each is matched on their own. First
+    names alone never count -- "Adam" is two different guests here."""
+    names = {n.strip() for g in guests for n in _GUEST_SPLIT.split(g or "") if " " in n.strip()}
+    return sorted(n for n in names
+                  if re.search(rf"(?<!\w){re.escape(n)}(?!\w)", message, re.IGNORECASE))
+
+
+async def guest_named_in(db: AsyncSession, message: str) -> str | None:
+    """The one guest a message asks about, if it names exactly one. Two or
+    more ("compare X and Y") is a comparison, not a filter."""
+    guests = (await db.execute(text("SELECT DISTINCT guest FROM episodes"))).scalars().all()
+    named = match_guest_names(message, list(guests))
+    return named[0] if len(named) == 1 else None
+
+
 async def _tool_search_transcripts(ctx: ToolContext, args: dict[str, Any]) -> dict:
     query = (args.get("query") or "").strip()
     if not query:
         return {"error": "query is required", "results": []}
 
-    result = await search(ctx.db, query)
+    try:
+        filters = SearchFilters.parse(args.get("guest"), args.get("since"), args.get("until"))
+    except ValueError as exc:
+        return {"error": f"{exc}. Fix it or leave the filter out.", "results": []}
+
+    # Deterministic insurance, as elsewhere in this agent: llama3.2:3b, the
+    # default model, was observed putting the guest's name into the query
+    # text instead of the `guest` argument, every time. If the user named
+    # exactly one guest the corpus has, filter by them regardless.
+    if not filters.guest and ctx.db is not None and ctx.user_message:
+        named = await guest_named_in(ctx.db, ctx.user_message)
+        if named:
+            filters = SearchFilters(guest=named, since=filters.since, until=filters.until)
+
+    result = await search(ctx.db, query, filters=filters)
     ctx.searched = True
+
+    if result.reason == "no_matching_episodes":
+        # Not "the corpus doesn't cover this topic" -- there is no such
+        # episode at all, and the honest answer says which.
+        return {
+            "results": [],
+            "grounded": False,
+            "no_matching_episodes": True,
+            "filters": filters.describe(),
+            "instruction": (
+                f"No episode in the transcripts matches {filters.describe()}. Tell the user "
+                "that directly -- the guest may never have been on the podcast, or not in "
+                "that period. Do NOT answer from your own knowledge. You may offer to "
+                "search without the filter."
+            ),
+        }
 
     if not result.grounded:
         # This is the grounding guard doing its job. We tell the model plainly
         # that it has nothing, so the honest answer is the only available one.
+        if filters.active:
+            return {
+                "results": [],
+                "grounded": False,
+                "filters": filters.describe(),
+                "instruction": (
+                    f"Episodes matching {filters.describe()} exist, but nothing in them met "
+                    "the relevance threshold for this query. Tell the user that, in "
+                    "those words -- not that the podcast never covers the topic. Do NOT "
+                    "answer from your own knowledge. You may offer to search all guests."
+                ),
+            }
         return {
             "results": [],
             "grounded": False,
@@ -167,11 +252,13 @@ async def _tool_search_transcripts(ctx: ToolContext, args: dict[str, Any]) -> di
 
     return {
         "grounded": True,
+        **({"filters": filters.describe()} if filters.active else {}),
         "results": [
             {
                 "n": i,
                 "guest": c.guest,
                 "episode": c.title,
+                "published": c.publish_date,
                 "timestamp": c.timestamp_label,
                 "excerpt": c.text,
             }

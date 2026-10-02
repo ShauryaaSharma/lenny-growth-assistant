@@ -47,7 +47,7 @@ def make_chunk(**overrides) -> RetrievedChunk:
 def grounded_search(monkeypatch):
     """Retrieval that finds good material."""
 
-    async def fake_search(db, query, top_k=None, min_similarity=None):
+    async def fake_search(db, query, top_k=None, min_similarity=None, filters=None):
         return RetrievalResult(
             chunks=[make_chunk()], query=query, grounded=True, best_similarity=0.78
         )
@@ -63,7 +63,7 @@ def grounded_search(monkeypatch):
 def empty_search(monkeypatch):
     """Retrieval that finds nothing above the similarity floor."""
 
-    async def fake_search(db, query, top_k=None, min_similarity=None):
+    async def fake_search(db, query, top_k=None, min_similarity=None, filters=None):
         return RetrievalResult(
             chunks=[], query=query, grounded=False, reason="below_similarity_threshold"
         )
@@ -496,7 +496,7 @@ class TestToolDispatch:
         ctx = ToolContext(db=None, session_id=uuid.uuid4())
         shared = make_chunk(chunk_id="fixed-id")
 
-        async def repeat_search(db, query, top_k=None, min_similarity=None):
+        async def repeat_search(db, query, top_k=None, min_similarity=None, filters=None):
             return RetrievalResult(chunks=[shared], query=query, grounded=True, best_similarity=0.8)
 
         import app.agent.tools as tools_module
