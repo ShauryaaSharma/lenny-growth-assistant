@@ -37,7 +37,7 @@ function CitationList({ citations }: { citations: Citation[] }) {
         <ol className="mt-2 space-y-1.5">
           {citations.map((c, i) => (
             <li key={c.chunk_id} className="flex gap-2 text-xs leading-snug">
-              <span className="shrink-0 font-mono text-ink-muted">[{i + 1}]</span>
+              <span className="shrink-0 font-mono text-ink-muted">[{c.n ?? i + 1}]</span>
               <span className="min-w-0">
                 {c.url ? (
                   <a

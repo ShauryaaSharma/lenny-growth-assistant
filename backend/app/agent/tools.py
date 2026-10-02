@@ -43,6 +43,22 @@ class PendingArtifact:
     sanitizer_report: dict
 
 
+_MARKER = re.compile(r"\[(\d{1,3}(?:\s*[,–-]\s*\d{1,3})*)\]")
+
+
+def cited_numbers(*texts: str) -> set[int]:
+    """Every n cited as [n], [n, m] or [n-m] across `texts`."""
+    found: set[int] = set()
+    for t in texts:
+        for m in _MARKER.finditer(t or ""):
+            for part in m.group(1).split(","):
+                bounds = [int(x) for x in re.split(r"\s*[–-]\s*", part.strip())]
+                low, high = bounds[0], bounds[-1]
+                if high - low <= 50:  # a range, not a year like [2019-2023]
+                    found.update(range(low, high + 1))
+    return found
+
+
 @dataclass
 class ToolContext:
     """Per-turn state threaded through tool calls."""
@@ -58,6 +74,15 @@ class ToolContext:
     # the model having relayed them (see guest_named_in).
     user_message: str = ""
 
+    # The number each retrieved passage is shown to the model under, stable
+    # for the whole turn: a passage keeps its number when a second search
+    # returns it again, and new passages continue the count. Without this
+    # every search restarted at [1] and "[1]" in an answer was ambiguous.
+    numbers: dict[str, int] = field(default_factory=dict)
+    # An essay cites its own evidence list (see app.skills.ship30), so its
+    # sources are attached as-is rather than matched against [n] markers.
+    essay_citations: list[dict] = field(default_factory=list)
+
     def add_citations(self, new: list[dict]) -> None:
         """Merge, preserving order and de-duplicating by chunk."""
         seen = {c["chunk_id"] for c in self.citations}
@@ -65,6 +90,28 @@ class ToolContext:
             if c["chunk_id"] not in seen:
                 self.citations.append(c)
                 seen.add(c["chunk_id"])
+
+    def number(self, chunk_id: str) -> int:
+        if chunk_id not in self.numbers:
+            self.numbers[chunk_id] = len(self.numbers) + 1
+        return self.numbers[chunk_id]
+
+    def cited(self, *texts: str) -> list[dict]:
+        """The sources the turn's output actually uses.
+
+        Everything retrieved used to be attached, so a reply saying "the
+        transcripts don't cover this" still listed eight unrelated sources
+        -- seen live, citing four guests who had nothing to do with the
+        question. Now: an essay's own evidence if one was written, otherwise
+        only passages whose [n] appears in `texts` (the reply and any
+        document created), in number order, each carrying its `n` so the UI
+        labels it to match the text."""
+        if self.essay_citations:
+            return self.essay_citations
+        used = cited_numbers(*texts)
+        by_number = {n: c for c in self.citations
+                     if (n := self.numbers.get(c["chunk_id"])) is not None}
+        return [{**by_number[n], "n": n} for n in sorted(used) if n in by_number]
 
 
 TOOL_SPECS: list[ToolSpec] = [
@@ -255,18 +302,18 @@ async def _tool_search_transcripts(ctx: ToolContext, args: dict[str, Any]) -> di
         **({"filters": filters.describe()} if filters.active else {}),
         "results": [
             {
-                "n": i,
+                "n": ctx.number(c.chunk_id),
                 "guest": c.guest,
                 "episode": c.title,
                 "published": c.publish_date,
                 "timestamp": c.timestamp_label,
                 "excerpt": c.text,
             }
-            for i, c in enumerate(result.chunks, start=1)
+            for c in result.chunks
         ],
         "instruction": (
-            "Answer using only these excerpts. Cite them inline as [1], [2] matching "
-            "the 'n' field. Attribute ideas to the guest who said them."
+            "Answer using only these excerpts. Cite each one you use inline by its "
+            "'n' field, e.g. [3]. Attribute ideas to the guest who said them."
         ),
     }
 
@@ -291,6 +338,8 @@ async def _tool_write_ship30_essay(ctx: ToolContext, args: dict[str, Any]) -> di
 
     ctx.grounded = True
     ctx.add_citations(result["citations"])
+    # The essay's [n] markers index its own evidence list, in this order.
+    ctx.essay_citations = [{**c, "n": i} for i, c in enumerate(result["citations"], start=1)]
 
     # The essay is long. Rather than push 1,250 words back through the model --
     # which on a 3B local model risks it truncating or "summarising" the work --

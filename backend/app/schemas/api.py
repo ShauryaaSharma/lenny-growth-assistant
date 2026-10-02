@@ -46,6 +46,9 @@ class SessionSummary(BaseModel):
 
 
 class CitationOut(BaseModel):
+    # The [n] the answer text cites this source as. None on messages saved
+    # before citations were numbered per turn, where position stood in.
+    n: int | None = None
     chunk_id: str
     episode_title: str
     guest: str

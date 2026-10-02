@@ -1,6 +1,8 @@
 export type ArtifactKind = "markdown" | "html";
 
 export interface Citation {
+  /** The [n] the answer cites this as; absent on older messages. */
+  n?: number | null;
   chunk_id: string;
   episode_title: string;
   guest: string;

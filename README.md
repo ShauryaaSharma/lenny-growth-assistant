@@ -64,7 +64,7 @@ Runs entirely on your machine. No API key required.
 │   │   ├── skills/ship30/             # principles.md (data) + skill.py (pipeline)
 │   │   ├── config.py, logging.py, main.py
 │   ├── alembic/                # one migration: the full schema
-│   ├── tests/                  # 272 tests -- see docs/architecture.md#testing-strategy
+│   ├── tests/                  # 300 tests -- see docs/architecture.md#testing-strategy
 │   └── Dockerfile, requirements*.txt
 ├── frontend/
 │   ├── app/                  # Next.js app router: layout, page, global styles
@@ -103,7 +103,7 @@ For an evaluator checking requirements against implementation directly:
 | 6.4 design.md | [docs/design.md](docs/design.md) |
 | 6.5 architecture.md | [docs/architecture.md](docs/architecture.md) |
 | 6.6 Agent transcripts | [agent-transcripts/](agent-transcripts/) -- 13 entries, including 5 real defects found and fixed by running the system live (3 of them live hallucinations, 2 caught by the agent harness and 1 by manual smoke-testing) and a real grounding-threshold defect caught by the retrieval eval harness |
-| 6.7 Tests | 272 automated tests, run in CI on every push -- see [Testing](#testing) -- plus a 24-question retrieval eval harness and an 8-scenario agent harness ([Evaluation](#evaluation)) and [docs/test-plan.md](docs/test-plan.md) |
+| 6.7 Tests | 300 automated tests, run in CI on every push -- see [Testing](#testing) -- plus a 24-question retrieval eval harness and an 8-scenario agent harness ([Evaluation](#evaluation)) and [docs/test-plan.md](docs/test-plan.md) |
 | 6.8 Demo video | Not part of this repository; recorded separately per the submission instructions |
 
 ---
@@ -300,12 +300,12 @@ Tests skip with a clear reason when no database is reachable, so `pytest` stays
 useful on a bare laptop. The manual UI test plan is in
 [docs/test-plan.md](docs/test-plan.md).
 
-**What the suite covers** (272 tests):
+**What the suite covers** (300 tests):
 
 | Layer | Where | What it pins down |
 |---|---|---|
 | Unit | `test_chunking.py`, `test_sanitize.py`, `test_memory.py`, `test_ship30_skill.py` | Chunk boundaries, HTML/Markdown sanitisation, reducers and the SQLite trace store, essay pipeline |
-| Agent routing | `test_agent_routing.py` | Search-before-answer, ungrounded and redundant-artifact guards, with a scripted model |
+| Agent routing | `test_agent_routing.py`, `test_citations.py` | Search-before-answer, ungrounded and redundant-artifact guards, and which sources an answer carries, with a scripted model |
 | Eval scoring | `test_eval_harness.py`, `test_agent_eval_harness.py` | The harnesses' own rate, precision and pass/fail arithmetic |
 | Integration | `test_retriever.py`, `test_search_filters.py`, `test_sessions.py` | Hybrid retrieval, guest and date filters, and session isolation against real Postgres + pgvector |
 | API | `test_api.py`, `test_chat_stream.py` | Every endpoint over HTTP: status codes, validation boundaries, the typed error envelope, persistence across a full chat turn, and the user's turn surviving an LLM outage |
