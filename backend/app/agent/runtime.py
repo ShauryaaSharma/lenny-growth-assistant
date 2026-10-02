@@ -121,13 +121,16 @@ def _summarize_result(name: str, result: dict[str, Any]) -> str:
         return "failed"
     if name == "search_transcripts":
         if not result.get("grounded"):
-            if result.get("filters"):
+            if result.get("no_matching_episodes"):
                 return f"no episode matches {result['filters']}"
+            if result.get("filters"):
+                return f"nothing relevant found ({result['filters']})"
             return "nothing relevant found"
         hits = result.get("results") or []
         episodes = len({r.get("episode") for r in hits})
+        scope = f" ({result['filters']})" if result.get("filters") else ""
         return (f"{len(hits)} passage{'s' * (len(hits) != 1)} from "
-                f"{episodes} episode{'s' * (episodes != 1)}")
+                f"{episodes} episode{'s' * (episodes != 1)}{scope}")
     if result.get("artifact_created"):
         words = f" ({result['word_count']:,} words)" if result.get("word_count") else ""
         return f"created “{result.get('title', 'document')}”{words}"
@@ -162,7 +165,7 @@ async def run_agent(
     guards below, and streaming it would show the user exactly the
     ungrounded content they exist to stop."""
     started = time.perf_counter()
-    ctx = ToolContext(db=db, session_id=session_id)
+    ctx = ToolContext(db=db, session_id=session_id, user_message=user_message)
     turn_id = str(uuid.uuid4())  # groups this turn's spans in the trace store
 
     messages = build_agent_messages(

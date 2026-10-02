@@ -16,7 +16,7 @@ import pytest
 
 import app.agent.tools as tools_module
 from app.agent.runtime import _describe_call, _summarize_result
-from app.agent.tools import ToolContext, execute_tool
+from app.agent.tools import ToolContext, execute_tool, match_guest_names
 from app.db.models import Chunk, Episode
 from app.rag.embeddings import embed_passages
 from app.rag.retriever import (
@@ -122,12 +122,97 @@ async def test_tool_says_when_no_episode_matches_rather_than_no_topic(captured_s
     assert "do not cover this topic" not in result["instruction"]
 
 
+# ------------------------------------------- guests named in the question
+
+GUESTS = ["Adam Fishman", "Adam Grenier", "Casey Winters", "Aishwarya Reganti + Kiriti Badam"]
+
+
+@pytest.mark.parametrize("message, named", [
+    ("What did Adam Grenier say about acquisition channels?", ["Adam Grenier"]),
+    ("what did casey winters say about retention", ["Casey Winters"]),
+    ("What does Kiriti Badam think about AI products?", ["Kiriti Badam"]),
+    ("Compare Casey Winters and Adam Fishman on growth", ["Adam Fishman", "Casey Winters"]),
+    ("What did Adam say about growth teams?", []),           # first name: two Adams
+    ("What did Elon Musk say about growth?", []),            # not in the corpus
+    ("Casey Wintersmith's take?", []),                        # not a whole-name match
+    ("How do I improve retention?", []),
+])
+def test_match_guest_names(message, named):
+    assert match_guest_names(message, GUESTS) == named
+
+
+@requires_db
+async def test_tool_filters_by_a_guest_the_user_named_when_the_model_did_not(db):
+    """What llama3.2:3b actually does: the name goes into the query text."""
+    await chunks(db, await episode(db, "Casey Winters"), [RETENTION])
+    await chunks(db, await episode(db, "Adam Fishman"), [RETENTION])
+    await db.commit()
+
+    ctx = ToolContext(db=db, session_id=uuid.uuid4(),
+                      user_message="What did Casey Winters say about user retention?")
+    result = await execute_tool(ctx, "search_transcripts",
+                                {"query": "Casey Winters onboarding user retention"})
+
+    assert result["filters"] == "Casey Winters"
+    assert result["grounded"] is True
+    assert {r["guest"] for r in result["results"]} == {"Casey Winters"}
+
+
+@requires_db
+async def test_nothing_relevant_from_the_guest_says_so_in_those_words(db):
+    """Not 'the podcast never covers this' -- only that this guest didn't."""
+    await chunks(db, await episode(db, "Casey Winters"), [RETENTION])
+    await db.commit()
+
+    ctx = ToolContext(db=db, session_id=uuid.uuid4(), user_message="q")
+    result = await execute_tool(ctx, "search_transcripts",
+                                {"query": "best sourdough starter recipe", "guest": "Casey"})
+
+    assert (result["grounded"], result["filters"]) == (False, "Casey")
+    assert "Episodes matching Casey exist" in result["instruction"]
+    assert "no_matching_episodes" not in result
+    assert _summarize_result("search_transcripts", result) == "nothing relevant found (Casey)"
+
+
+@requires_db
+async def test_two_named_guests_are_not_filtered_to_one(db):
+    await chunks(db, await episode(db, "Casey Winters"), [RETENTION])
+    await chunks(db, await episode(db, "Adam Fishman"), [RETENTION])
+    await db.commit()
+
+    ctx = ToolContext(db=db, session_id=uuid.uuid4(),
+                      user_message="Compare Casey Winters and Adam Fishman on user retention")
+    result = await execute_tool(ctx, "search_transcripts", {"query": "user retention"})
+
+    assert "filters" not in result
+    assert {r["guest"] for r in result["results"]} == {"Casey Winters", "Adam Fishman"}
+
+
+@requires_db
+async def test_the_models_own_guest_argument_wins(db):
+    await chunks(db, await episode(db, "Casey Winters"), [RETENTION])
+    await chunks(db, await episode(db, "Adam Fishman"), [RETENTION])
+    await db.commit()
+
+    ctx = ToolContext(db=db, session_id=uuid.uuid4(),
+                      user_message="What did Casey Winters say about user retention?")
+    result = await execute_tool(ctx, "search_transcripts",
+                                {"query": "user retention", "guest": "Adam Fishman"})
+
+    assert {r["guest"] for r in result["results"]} == {"Adam Fishman"}
+
+
 def test_progress_feed_shows_filters():
     args = {"query": "retention", "guest": "Casey Winters", "since": "2023"}
     assert _describe_call("search_transcripts", args) == "retention (Casey Winters, since 2023-01-01)"
     assert _describe_call("search_transcripts", {"query": "q", "since": "bad"}) == "q"
-    assert _summarize_result("search_transcripts", {"grounded": False, "filters": "Nobody",
-                                                    "results": []}) == "no episode matches Nobody"
+    assert _summarize_result("search_transcripts", {
+        "grounded": False, "no_matching_episodes": True, "filters": "Nobody", "results": [],
+    }) == "no episode matches Nobody"
+    assert _summarize_result("search_transcripts", {
+        "grounded": True, "filters": "Casey Winters",
+        "results": [{"episode": "a"}, {"episode": "a"}],
+    }) == "2 passages from 1 episode (Casey Winters)"
 
 
 # ----------------------------------------------------- against real SQL
