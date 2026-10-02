@@ -359,7 +359,8 @@ async def run_agent(
 
     return AgentResult(
         content=final_content,
-        citations=ctx.citations,
+        # Only what the reply (or a document it made) actually cites.
+        citations=ctx.cited(final_content, *(a.content for a in ctx.artifacts)),
         artifacts=ctx.artifacts,
         tool_calls=ctx.tool_log,
         provider=provider,
