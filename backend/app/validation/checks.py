@@ -18,6 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.rag.chunking import parse_frontmatter
 from app.rag.ingest import discover_transcripts
 
 # Lenny's Podcast began in 2019; anything earlier is a parsing error.
@@ -54,24 +55,55 @@ async def _column(db: AsyncSession, sql: str, **params) -> list[str]:
 
 # --------------------------------------------------------------- the checks
 
-async def episodes_match_corpus(db: AsyncSession, expected: int | None) -> Check:
-    """Every transcript in the corpus became an episode, and nothing else did.
+def corpus_video_ids() -> dict[str, list[str]] | None:
+    """Video id -> the transcript folders carrying it, for the transcripts
+    ingestion would pick up (same discovery, same INGEST_EPISODE_LIMIT), or
+    None when the corpus isn't on this machine."""
+    settings = get_settings()
+    corpus = Path(settings.transcripts_local_path)
+    if not corpus.exists():
+        return None
+    ids: dict[str, list[str]] = {}
+    for path in discover_transcripts(corpus, settings.ingest_episode_limit):
+        try:
+            meta, _ = parse_frontmatter(path.read_text(encoding="utf-8"), str(path))
+        except (OSError, ValueError):
+            continue  # ingestion skips it too, and logs why
+        ids.setdefault(meta.video_id, []).append(path.parent.name)
+    return ids
 
-    Without an explicit count, the reference is the transcripts ingestion
-    would pick up -- the same discovery function, honouring
-    INGEST_EPISODE_LIMIT -- so a subset ingest is checked against its subset."""
+
+async def episodes_match_corpus(db: AsyncSession, expected: int | None,
+                                ids: dict[str, list[str]] | None = None) -> Check:
+    """Every video in the corpus became exactly one episode.
+
+    Without an explicit count, the reference is the distinct video ids among
+    the transcripts ingestion would pick up, so a subset ingest is checked
+    against its subset, and two folders sharing an id count once (see
+    `duplicate_video_ids`)."""
     name = "episode count matches the corpus"
-    if expected is None:
-        settings = get_settings()
-        corpus = Path(settings.transcripts_local_path)
-        if corpus.exists():
-            expected = len(discover_transcripts(corpus, settings.ingest_episode_limit))
+    if expected is None and ids is not None:
+        expected = len(ids)
     if expected is None:
         return Check(name, "warn", "no reference count: pass --expected-episodes or "
                                    "make TRANSCRIPTS_LOCAL_PATH available")
     actual = await _scalar(db, "SELECT count(*) FROM episodes")
     return _result(name, actual != expected, f"{actual} episodes, as expected",
                    f"{actual} episodes, expected {expected}")
+
+
+def duplicate_video_ids(ids: dict[str, list[str]] | None) -> Check:
+    """Folders that share a video id: only the first is ingested, so the
+    others' transcripts are not in the knowledge base. Upstream data, so a
+    warning to act on there, not a failure here."""
+    name = "no transcripts share a video id"
+    if ids is None:
+        return Check(name, "warn", "corpus not available to check")
+    dupes = [f"{video_id}: {', '.join(folders)}"
+             for video_id, folders in sorted(ids.items()) if len(folders) > 1]
+    return _result(name, len(dupes), "every transcript has its own video id",
+                   f"{len(dupes)} video ids are shared by several transcripts; "
+                   "only the first of each is ingested", dupes, warn_only=True)
 
 
 async def every_episode_has_chunks(db: AsyncSession) -> Check:
@@ -226,8 +258,10 @@ async def sample_is_reachable(db: AsyncSession, sample: int) -> list[Check]:
 
 async def run_all(db: AsyncSession, *, expected_episodes: int | None = None,
                   earliest: date = DEFAULT_MIN_PUBLISH_DATE, sample: int = 20) -> list[Check]:
+    ids = corpus_video_ids()
     return [
-        await episodes_match_corpus(db, expected_episodes),
+        await episodes_match_corpus(db, expected_episodes, ids),
+        duplicate_video_ids(ids),
         await every_episode_has_chunks(db),
         await chunk_ordinals_are_contiguous(db),
         await no_orphan_chunks(db),

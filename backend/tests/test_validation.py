@@ -47,11 +47,23 @@ def by_name(results: list[checks.Check]) -> dict[str, checks.Check]:
     return {c.name: c for c in results}
 
 
-async def test_a_clean_knowledge_base_passes_every_check(db):
-    await seed(db)
-    results = await checks.run_all(db, expected_episodes=2)
+def corpus(root, monkeypatch, video_ids: dict[str, str], limit: int = 0) -> None:
+    """Transcript folders on disk (folder -> video id), and the checks pointed at them."""
+    for folder, video_id in video_ids.items():
+        path = root / "episodes" / folder / "transcript.md"
+        path.parent.mkdir(parents=True)
+        path.write_text(f"---\nguest: G\nvideo_id: {video_id}\n---\n", encoding="utf-8")
+    monkeypatch.setenv("TRANSCRIPTS_LOCAL_PATH", str(root))
+    monkeypatch.setenv("INGEST_EPISODE_LIMIT", str(limit))
+    checks.get_settings.cache_clear()
+
+
+async def test_a_clean_knowledge_base_passes_every_check(db, tmp_path, monkeypatch):
+    episodes = await seed(db)
+    corpus(tmp_path, monkeypatch, {ep.video_id: ep.video_id for ep in episodes})
+    results = await checks.run_all(db)
     assert [c.name for c in results if c.status != "pass"] == []
-    assert "12 passed, 0 warnings, 0 failed" in render(results)
+    assert "13 passed, 0 warnings, 0 failed" in render(results)
 
 
 async def test_episode_count_must_match_the_corpus(db):
@@ -62,20 +74,26 @@ async def test_episode_count_must_match_the_corpus(db):
 
 async def test_without_a_count_the_corpus_is_counted_as_ingestion_would(db, tmp_path,
                                                                      monkeypatch):
-    for name in ("a", "b", "c"):
-        (tmp_path / "episodes" / name).mkdir(parents=True)
-        (tmp_path / "episodes" / name / "transcript.md").write_text("x")
-    monkeypatch.setenv("TRANSCRIPTS_LOCAL_PATH", str(tmp_path))
     await seed(db)
-
-    monkeypatch.setenv("INGEST_EPISODE_LIMIT", "2")
-    checks.get_settings.cache_clear()
-    assert (await checks.episodes_match_corpus(db, None)).status == "pass"
+    corpus(tmp_path, monkeypatch, {"a": "id-a", "b": "id-b", "c": "id-c"}, limit=2)
+    assert (await checks.episodes_match_corpus(db, None, checks.corpus_video_ids())).ok
 
     monkeypatch.setenv("INGEST_EPISODE_LIMIT", "0")
     checks.get_settings.cache_clear()
-    result = await checks.episodes_match_corpus(db, None)
+    result = await checks.episodes_match_corpus(db, None, checks.corpus_video_ids())
     assert result.status == "fail" and result.detail == "2 episodes, expected 3"
+
+
+async def test_folders_sharing_a_video_id_count_once_and_warn(db, tmp_path, monkeypatch):
+    """Upstream has two such pairs; ingestion keeps the first of each."""
+    await seed(db)
+    corpus(tmp_path, monkeypatch, {"andy-raskin": "dkV", "andy-raskin_": "dkV", "b": "id-b"})
+    ids = checks.corpus_video_ids()
+
+    assert (await checks.episodes_match_corpus(db, None, ids)).status == "pass"
+    dupes = checks.duplicate_video_ids(ids)
+    assert dupes.status == "warn" and dupes.ok
+    assert dupes.examples == ["dkV: andy-raskin, andy-raskin_"]
 
 
 async def test_an_episode_without_chunks_fails(db):
