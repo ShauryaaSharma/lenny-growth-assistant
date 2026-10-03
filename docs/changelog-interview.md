@@ -25,3 +25,11 @@ One entry per change: what changed, why, and how to explain it.
 - **Why the fourth matters:** a client generated from `/openapi.json` would have parsed every error wrongly. Schemathesis didn't flag it because FastAPI's default doesn't require its `detail` field — so a passing contract check is only as strict as the schema it checks.
 - **How I know the checks work:** with a required field added that the API never sends, every 422 failed the schema check; with the fixes reverted, 17 of the 18 new regression tests fail (the 18th is a boundary test meant to pass both ways).
 - **One tool choice to explain:** Schemathesis is pinned to 3.x because 4.x needs a native extension that this Windows machine's Application Control policy blocks; FastAPI emits OpenAPI 3.1, which 3.x supports behind `--experimental=openapi-3.1`.
+
+## 4. Playwright end-to-end tests
+
+- **What changed:** `frontend/e2e/` has 6 Playwright journeys — start a session, ask and see the citation, filter by guest, filter by date, generate a document that renders in the viewer, and an off-topic refusal — run headless in CI against the production build, with traces, screenshots and video uploaded only for failures.
+- **How it's deterministic:** the same mock LLM as the API collection, reached through the app's normal provider, so the UI, API and database are real and each answer is exact. No retries are configured, so a flaky test fails rather than hiding.
+- **A design finding:** the UI has no filter controls — filters come from what the user types (guest detection, or the model passing `since`/`until`). So the filter journeys type the question, as a user would; the mock passes date bounds the way a capable model would.
+- **A bug caught in my own mock:** I first mapped "before 2024" to `until=2024`, but a bare year means the whole year, so it should be `until=2023`; fixed and covered by its unit tests.
+- **How I know the tests work:** with the UI's source list deliberately disabled, exactly the 3 journeys that read sources failed (each with a screenshot); the refusal test, which asserts there are none, still passed.
