@@ -1,7 +1,8 @@
 """Transcript parsing and chunking.
 
 The corpus is one markdown file per episode: YAML frontmatter, then the body as
-`Speaker (HH:MM:SS):` blocks.
+`Speaker (HH:MM:SS):` blocks -- or, in about 10% of it, one of the variants
+`parse_turns` also reads.
 
 Two decisions worth calling out:
 
@@ -27,7 +28,22 @@ from pathlib import Path
 
 import yaml
 
-TURN_RE = re.compile(r"^(?P<speaker>[^\n(]{1,120}?)\s*\((?P<ts>\d{1,2}:\d{2}:\d{2})\):\s*$")
+# `Speaker (HH:MM:SS):`, `Speaker (MM:SS):`, or a bare `(MM:SS):` meaning the
+# previous speaker continues -- all three occur in the upstream corpus.
+TURN_RE = re.compile(
+    r"^(?P<speaker>[^\n(]{0,120}?)\s*\((?P<ts>(?:\d{1,2}:)?\d{1,3}:\d{2})\):\s*$"
+)
+# The two rarer layouts below are only tried when a file has no turn in the
+# layout above, and only take a name-like speaker label (one to five
+# capitalised words), so a sentence containing a colon is not mistaken for one.
+_NAME = r"[A-Z][\w'.-]*(?: [A-Z][\w'.-]*){0,4}"
+# `[HH:MM:SS] Speaker: text` on one line; without a speaker, the previous one
+# continues.
+INLINE_TURN_RE = re.compile(
+    rf"^\[(?P<ts>(?:\d{{1,2}}:)?\d{{1,3}}:\d{{2}})\]\s*(?:(?P<speaker>{_NAME}):\s*)?(?P<text>.*)$"
+)
+# `Speaker:` alone on a line, in transcripts with no timestamps at all.
+UNTIMED_TURN_RE = re.compile(rf"^(?P<speaker>{_NAME}):\s*$")
 
 SPONSOR_MARKERS = (
     "brought to you by",
@@ -64,7 +80,7 @@ class EpisodeMeta:
 @dataclass
 class Turn:
     speaker: str
-    start_seconds: int
+    start_seconds: int | None
     text: str
     is_sponsor: bool = False
 
@@ -92,8 +108,11 @@ def estimate_tokens(text: str) -> int:
 
 
 def _ts_to_seconds(ts: str) -> int:
-    h, m, s = (int(p) for p in ts.split(":"))
-    return h * 3600 + m * 60 + s
+    """`H:MM:SS` or `MM:SS` to seconds."""
+    seconds = 0
+    for part in ts.split(":"):
+        seconds = seconds * 60 + int(part)
+    return seconds
 
 
 def parse_frontmatter(raw: str, source_path: str) -> tuple[EpisodeMeta, str]:
@@ -159,7 +178,24 @@ def parse_frontmatter(raw: str, source_path: str) -> tuple[EpisodeMeta, str]:
 
 
 def parse_turns(body: str) -> list[Turn]:
-    """Extract `Speaker (HH:MM:SS):` blocks in document order."""
+    """Extract speaker turns in document order.
+
+    The first layout that yields any turns wins: `Speaker (time):` headers,
+    then one-line `[time] Speaker: text`, then untimed `Speaker:` headers
+    (whose turns have no start time). A transcript in none of these yields no
+    turns and so no chunks, which the knowledge-base checks report as an
+    episode with no chunks rather than letting it pass silently.
+    """
+    turns: list[Turn] = []
+    for pattern in (TURN_RE, INLINE_TURN_RE, UNTIMED_TURN_RE):
+        turns = _parse(body, pattern)
+        if turns:
+            break
+    _flag_sponsors(turns)
+    return turns
+
+
+def _parse(body: str, pattern: re.Pattern[str]) -> list[Turn]:
     turns: list[Turn] = []
     current: Turn | None = None
     buffer: list[str] = []
@@ -172,20 +208,24 @@ def parse_turns(body: str) -> list[Turn]:
                 turns.append(current)
 
     for line in body.splitlines():
-        match = TURN_RE.match(line.strip())
+        match = pattern.match(line.strip())
         if match:
             flush()
             buffer = []
+            groups = match.groupdict()
+            # A timestamp with no speaker continues the previous one.
+            speaker = (groups["speaker"] or "").strip() or (
+                current.speaker if current else "Unknown speaker")
             current = Turn(
-                speaker=match.group("speaker").strip(),
-                start_seconds=_ts_to_seconds(match.group("ts")),
+                speaker=speaker,
+                start_seconds=_ts_to_seconds(groups["ts"]) if groups.get("ts") else None,
                 text="",
             )
+            if groups.get("text"):
+                buffer.append(groups["text"])
         elif current is not None:
             buffer.append(line)
     flush()
-
-    _flag_sponsors(turns)
     return turns
 
 

@@ -159,3 +159,53 @@ def test_token_estimate_is_never_zero():
     # A zero would let an empty chunk slip past the packing budget check.
     assert estimate_tokens("") >= 1
     assert estimate_tokens("hello world") >= 2
+
+
+class TestTranscriptLayouts:
+    """The layouts the upstream corpus actually uses. Before these were read,
+    30 of its 303 transcripts produced no chunks at all -- and in 242 more,
+    a bare `(00:01:21):` line was left inside the previous turn's text."""
+
+    @staticmethod
+    def turns(body: str):
+        return [(t.speaker, t.start_seconds, t.text) for t in parse_turns(body)]
+
+    def test_minutes_and_seconds_only(self):
+        body = "\nAsha Sharma (00:04):\nAgents change the org chart.\n\nLenny (01:02:03):\nSay more.\n"
+        assert self.turns(body) == [("Asha Sharma", 4, "Agents change the org chart."),
+                                    ("Lenny", 3723, "Say more.")]
+
+    def test_a_bare_timestamp_continues_the_previous_speaker(self):
+        body = "\nLenny (00:00:55):\nWelcome to the show.\n\n(00:01:21):\nToday my guest is Ada.\n"
+        assert self.turns(body) == [("Lenny", 55, "Welcome to the show."),
+                                    ("Lenny", 81, "Today my guest is Ada.")]
+
+    def test_one_line_turns_with_a_bracketed_timestamp(self):
+        body = ("\n[00:00:00] Ryan: Product Hunt started in 2013.\n"
+                "[00:02:12] Hey Ashley, how many SaaS companies import CSVs: most?\n"
+                "[00:02:22] Ashley: At least 40%.\n")
+        assert self.turns(body) == [
+            ("Ryan", 0, "Product Hunt started in 2013."),
+            # No name-like label before the colon: the previous speaker continues.
+            ("Ryan", 132, "Hey Ashley, how many SaaS companies import CSVs: most?"),
+            ("Ashley", 142, "At least 40%."),
+        ]
+
+    def test_untimed_speaker_lines_give_turns_without_a_start(self):
+        body = ("\nAdriel Frederick:\nFeed all data to the algorithm.\n\n"
+                "Lenny:\nHere are the three things:\nfocus, speed, taste.\n")
+        assert self.turns(body) == [
+            ("Adriel Frederick", None, "Feed all data to the algorithm."),
+            # "Here are the three things:" is not a name, so it stays as text.
+            ("Lenny", None, "Here are the three things:\nfocus, speed, taste."),
+        ]
+
+    def test_untimed_lines_are_ignored_in_a_timestamped_transcript(self):
+        body = "\nLenny (00:00:01):\nMy advice:\n\nShip It:\nthat is the point.\n"
+        assert self.turns(body) == [
+            ("Lenny", 1, "My advice:\n\nShip It:\nthat is the point.")]
+
+    def test_untimed_chunks_carry_no_timestamp(self):
+        body = "\nLenny:\n" + "word " * 50 + "\n"
+        [chunk] = chunk_turns(parse_turns(body))
+        assert chunk.start_seconds is None and chunk.end_seconds is None
