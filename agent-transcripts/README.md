@@ -146,6 +146,27 @@ behaviour rather than just structure.
     category. See
     [11-agent-harness-found-three-real-hallucination-bugs.md](11-agent-harness-found-three-real-hallucination-bugs.md).
 
+## Session 3 — contract testing from the OpenAPI schema
+
+**Goal:** check every non-LLM endpoint against what `/openapi.json` claims,
+with generated requests rather than hand-picked ones (Schemathesis, run
+against the live API with the deterministic mock LLM).
+
+1. The first run found a 500 on a session titled with one NUL character —
+   Postgres cannot store U+0000. Fixed by rejecting it at validation on every
+   stored or queried string — see
+   [14-contract-testing-nul-character-500.md](14-contract-testing-nul-character-500.md).
+2. Reading that 500's body showed its `request_id` was `-`, in the response
+   and in the log: the id was lost on exactly the errors that need it — see
+   [15-request-id-lost-on-unhandled-errors.md](15-request-id-lost-on-unhandled-errors.md).
+3. The second run found `?offset=9223372036854775808` overflowing Postgres's
+   bigint `OFFSET` — see
+   [16-session-list-offset-overflow.md](16-session-list-offset-overflow.md).
+4. With the run clean, checking why 422s had passed the schema check showed
+   the schema documented FastAPI's default error shape, not the API's — see
+   [17-openapi-documented-the-wrong-error-shape.md](17-openapi-documented-the-wrong-error-shape.md).
+   After correcting it: 803/803 generated requests passed every check.
+
 ## What this log is trying to demonstrate
 
 Per the brief: "we are evaluating your judgment and ability to direct, verify,
