@@ -18,15 +18,15 @@ skip without one.
 
 | Type | Marker / tool | What it covers | Count | Command |
 |---|---|---|---|---|
-| Unit | `unit` | Chunking, sanitiser, reducers, trace store, Ship 30 rubric, agent routing and guards with a scripted model, citation numbering, the mock LLM, the Bedrock / Azure OpenAI adapters and SigV4 signing against mocked HTTP | 207 | `python -m pytest -m unit` |
+| Unit | `unit` | Chunking, sanitiser, reducers, trace store, Ship 30 rubric, agent routing and guards with a scripted model, citation numbering, the mock LLM, the Bedrock / Azure OpenAI adapters and SigV4 signing against mocked HTTP, the load-test summary | 208 | `python -m pytest -m unit` |
 | API | `api` | Every endpoint in-process over HTTP: status codes, validation, the error envelope, chat persistence, the SSE stream, contract regressions | 86 | `python -m pytest -m api` |
-| Integration | `integration` (derived) | Hybrid retrieval, filters, sessions and the knowledge-base checks against real Postgres + pgvector; overlaps with API for the 25 HTTP tests that need the database | 63 | `python -m pytest -m integration` |
+| Integration | `integration` (derived) | Hybrid retrieval, filters, sessions and the knowledge-base checks against real Postgres + pgvector; overlaps with API for the 25 HTTP tests that need the database | 64 | `python -m pytest -m integration` |
 | Eval logic | `eval` | The eval harnesses' own scoring arithmetic (not live model runs) | 38 | `python -m pytest -m eval` |
-| Fast lane | `not slow` | Everything except the 22 tests that compute real embeddings on CPU | 347 | `python -m pytest -m "not slow"` |
-| Everything, with coverage | — | The full suite; fails below the coverage floor in `pyproject.toml` (72%) | 369 | `python -m pytest --cov=app --cov-report=term` |
+| Fast lane | `not slow` | Everything except the 22 tests that compute real embeddings on CPU | 349 | `python -m pytest -m "not slow"` |
+| Everything, with coverage | — | The full suite; fails below the coverage floor in `pyproject.toml` (72%) | 371 | `python -m pytest --cov=app --cov-report=term` |
 | External API contract | Postman / Newman | All 13 routes from outside the process, with JSON-schema, status and timing checks and 404/422 negatives | 36 requests | see `postman/README.md` |
 | Knowledge-base validation | `python -m app.validation` | 12 SQL checks on the ingested data: counts vs corpus, empty episodes, orphan chunks, missing or wrong-size embeddings, publish dates, index validity, and a sample found again through both indexes; exits 1 on failure | 12 checks | `python -m app.validation --expected-episodes N` |
-| Load | Locust | Traffic mix against the running API, failing past a p95 or error-rate limit | — | see `backend/loadtests/README.md` |
+| Load | Locust | Traffic mix against the docker compose stack, failing past a p95 or error-rate limit; manual CI workflow uploads CSV + HTML | — | `bash backend/loadtests/compose_run.sh`, or the "Load test" workflow |
 | Live evaluation | eval harnesses | Grounding rate, false-ground rate and agent routing against the real model and corpus | 24 + 8 cases | see the README's Evaluation section |
 
 Counts are from `python -m pytest --collect-only -m <marker>` on this

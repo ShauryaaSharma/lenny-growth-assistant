@@ -29,6 +29,33 @@ The run **exits non-zero** if the failure ratio exceeds 1% or p95 latency
 exceeds 1500 ms. Both limits are env-tunable: `LOAD_MAX_FAILURE_RATIO`,
 `LOAD_MAX_P95_MS`.
 
+### Against docker compose, in one command
+
+From the repository root:
+
+```bash
+bash backend/loadtests/compose_run.sh
+```
+
+It brings up Postgres and the API with docker compose, ingests a
+40-episode subset of the corpus, runs `python -m app.validation` against it
+(so a broken ingest fails the run instead of producing fast, meaningless
+numbers), then runs Locust and writes to `loadtests/results/`:
+`run_stats.csv` and the other CSVs, `report.html`, and `summary.md`, a table
+labelled with the date, the machine, the load profile and the corpus size.
+`USERS`, `SPAWN_RATE`, `RUN_TIME` and `EPISODES` override the defaults
+(20, 5, 2m, 40). The stack is left running; `docker compose down -v` removes it.
+
+### In CI
+
+The **Load test** workflow (`.github/workflows/load-test.yml`) runs the same
+script on a GitHub-hosted runner. It is manual (Actions → Load test → Run
+workflow, with the same four inputs), because a load test on a shared runner
+measures the runner as much as the app. It also runs on pull requests that
+change the load test, so a broken script is caught at review time. The summary
+appears on the run page, and the CSV and HTML files are uploaded as the
+`load-test-results` artifact.
+
 ## Results
 
 Measured 2026-10-02 on one 16-thread Windows laptop, with Locust, a single
