@@ -6,7 +6,10 @@ nothing in the application has a test mode: the real agent loop, tools,
 guards and persistence all run. Only the model's judgement is scripted:
 
   no tools offered (a trivial message)   -> a short greeting
-  nothing searched yet this turn          -> call search_transcripts(<question>)
+  nothing searched yet this turn          -> call search_transcripts(<question>),
+                                             passing since/until when the question
+                                             says "since 2023" or "before 2023",
+                                             as a capable model would
   search found nothing                    -> refuse, citing nothing
   question asks for a document            -> call create_artifact, citing [n]
   document already created                -> a one-line description
@@ -21,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MODEL = "mock-model"
@@ -46,7 +50,7 @@ def respond(payload: dict) -> dict:
 
     searches = [_json(m) for m in tool_results if m.get("name") == "search_transcripts"]
     if not searches:
-        return _call("search_transcripts", {"query": question[:200]})
+        return _call("search_transcripts", {"query": question[:200], **_date_filters(question)})
 
     latest = searches[-1]
     hits = latest.get("results") or []
@@ -69,6 +73,20 @@ def respond(payload: dict) -> dict:
 
     return _text(f"{first['guest']} argues that onboarding is the lever for retention "
                  f"[{first['n']}].")
+
+
+def _date_filters(question: str) -> dict:
+    """since/until from the question. A bare year as a bound means the whole
+    year, so "since 2023" and "until 2023" include 2023 while "after 2023"
+    and "before 2023" exclude it."""
+    found = {}
+    if m := re.search(r"\b(since|after)\s+(\d{4})\b", question, re.IGNORECASE):
+        year = int(m.group(2)) + (m.group(1).lower() == "after")
+        found["since"] = str(year)
+    if m := re.search(r"\b(until|before)\s+(\d{4})\b", question, re.IGNORECASE):
+        year = int(m.group(2)) - (m.group(1).lower() == "before")
+        found["until"] = str(year)
+    return found
 
 
 def _text(content: str) -> dict:

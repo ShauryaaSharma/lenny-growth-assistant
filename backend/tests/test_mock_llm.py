@@ -46,6 +46,20 @@ def test_searches_first_with_the_question():
         "search_transcripts", {"query": "How do I improve retention?"})
 
 
+@pytest.mark.parametrize("question, filters", [
+    ("What was said about channels since 2024?", {"since": "2024"}),
+    ("Anything on pricing after 2022?", {"since": "2023"}),
+    ("What did people say until 2023?", {"until": "2023"}),
+    ("What did people say before 2023?", {"until": "2022"}),
+    ("Growth advice since 2022 but before 2024", {"since": "2022", "until": "2023"}),
+    ("Advice from 2023?", {}),
+])
+def test_passes_date_filters_the_question_states(question, filters):
+    name, args = called(ask(question))
+    assert name == "search_transcripts"
+    assert {k: v for k, v in args.items() if k in ("since", "until")} == filters
+
+
 def test_answers_citing_the_first_excerpt_by_its_number():
     reply = ask("How do I improve retention?", search_result(True))
     assert reply["content"] == "Adam Fishman argues that onboarding is the lever for retention [3]."
