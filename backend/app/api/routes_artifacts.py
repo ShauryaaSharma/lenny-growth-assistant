@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.errors import INVALID, NOT_FOUND
 from app.db.models import Artifact
 from app.db.session import get_db
 from app.schemas.api import ArtifactOut, ArtifactSummary
@@ -21,7 +22,7 @@ from app.schemas.api import ArtifactOut, ArtifactSummary
 router = APIRouter(prefix="/api/artifacts", tags=["artifacts"])
 
 
-@router.get("", response_model=list[ArtifactSummary])
+@router.get("", response_model=list[ArtifactSummary], responses=INVALID)
 async def list_artifacts(
     session_id: uuid.UUID | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
@@ -34,7 +35,7 @@ async def list_artifacts(
     return [ArtifactSummary.model_validate(a) for a in rows]
 
 
-@router.get("/{artifact_id}", response_model=ArtifactOut)
+@router.get("/{artifact_id}", response_model=ArtifactOut, responses={**NOT_FOUND, **INVALID})
 async def get_artifact(
     artifact_id: uuid.UUID, db: AsyncSession = Depends(get_db)
 ) -> ArtifactOut:

@@ -27,6 +27,22 @@ class ErrorResponse(BaseModel):
     error: ErrorDetail
 
 
+class FieldError(BaseModel):
+    loc: str = Field(description="Where the problem is, e.g. `body.query`")
+    msg: str
+
+
+class ValidationErrorDetail(ErrorDetail):
+    fields: list[FieldError] = Field(default_factory=list)
+
+
+class ValidationErrorResponse(BaseModel):
+    """What every 422 actually returns (see `validation_error` in main.py),
+    replacing FastAPI's default `{"detail": [...]}` in the OpenAPI schema."""
+
+    error: ValidationErrorDetail
+
+
 # ---------------------------------------------------- text Postgres can store
 
 
