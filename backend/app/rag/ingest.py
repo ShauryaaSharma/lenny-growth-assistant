@@ -155,6 +155,7 @@ async def run_ingestion(force: bool = False) -> dict:
         run_id = run.id
 
     seen = ingested = skipped = chunks_written = 0
+    kept_path: dict[str, str] = {}
     error: str | None = None
 
     try:
@@ -177,6 +178,18 @@ async def run_ingestion(force: bool = False) -> dict:
                 log.warning("episode_parse_failed", path=str(path), error=str(exc))
                 skipped += 1
                 continue
+
+            # Upstream, two folders can carry the same video id (a duplicate
+            # folder, or a copy-pasted URL). Episodes are keyed by video id, so
+            # the second used to overwrite the first silently -- and, their
+            # hashes differing, re-embed both on every later run. The first in
+            # sorted order is kept; the other is skipped and logged.
+            if meta.video_id in kept_path:
+                log.warning("duplicate_video_id", video_id=meta.video_id,
+                            kept=kept_path[meta.video_id], skipped=str(path))
+                skipped += 1
+                continue
+            kept_path[meta.video_id] = str(path)
 
             if force:
                 meta.content_hash = f"{meta.content_hash}-force-{run_id}"
