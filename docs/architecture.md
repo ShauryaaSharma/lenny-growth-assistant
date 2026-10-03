@@ -178,9 +178,14 @@ Migration: [backend/alembic/versions/0001_initial_schema.py](../backend/alembic/
 clone/pull corpus (git, shallow)
         │
         ▼
+resolve folders that share a video id  (resolve_shared_video_ids)
+        │
+        ▼
 for each episodes/*/transcript.md:
         │
+        ├─ skip it if it's a copy of another folder's transcript
         ├─ parse YAML frontmatter + speaker turns  (rag/chunking.py)
+        │      drop id/URL/title/date it borrowed from another episode
         ├─ hash content → skip if unchanged from last run
         ├─ chunk on whole speaker turns, ~400 tokens, 80 overlap
         │      splitting only a monologue that alone exceeds the budget
@@ -205,6 +210,29 @@ produces confidently-cited nonsense. Flagging rather than deleting keeps the
 data auditable — an operator can query `is_sponsor` directly rather than trust
 that a deletion pass did the right thing.
 
+**Four transcript layouts, not one.** Most of the corpus writes turns as
+`Speaker (HH:MM:SS):`. About a tenth uses `Speaker (MM:SS):`, a one-line
+`[HH:MM:SS] Speaker: text`, or untimed `Speaker:` headers, and many files use a
+bare `(MM:SS):` line to continue the same speaker. The parser reads all of
+them. The two rarer layouts are tried only when a file has no timestamped turn,
+and only accept name-like speaker labels. Until this was fixed, 30 of 303
+transcripts produced no chunks without raising, which is how they survived a
+whole-corpus parse test (agent-transcripts/18).
+
+**Why shared video ids are resolved, not trusted.** Episodes are keyed by
+YouTube video id, and upstream 31 ids each appear in two folders: one folder's
+title, URL, id and date were copied into the other's. Left alone, the second
+folder overwrote the first, so 31 transcripts vanished and 31 episodes showed
+one guest's words under another's title. Ingestion now resolves each pair
+before it starts. A copy of the same transcript is skipped (7 pairs). For two
+different episodes, the folder whose guest the title names keeps the metadata,
+and any folder that doesn't keeps its own guest and text but drops the
+borrowed id, URL, title and date: cited by guest, with no link, and outside
+date filters. When the title can't tell the two apart ("Tomer Cohen" vs
+"Tomer Cohen 2.0"), neither keeps it. Rows ingested before this are removed
+with `python -m app.rag.ingest --prune`, which is explicit rather than
+automatic, so a partial clone can never empty the knowledge base.
+
 **Why per-episode transactions:** a corpus-wide transaction means one malformed
 file aborts everything ingested before it. A per-episode transaction means a
 failure on episode 200 still leaves episodes 1–199 committed, and the failure
@@ -212,7 +240,7 @@ is recorded in `ingestion_runs` rather than silently dropped.
 
 **Measured throughput and its consequence.** On the 16-thread CPU-only
 reference machine, embedding the corpus proceeds at roughly 0.7–1 chunk/second
-— the full 17,785-chunk corpus is a multi-hour run. This is CPU-bound ONNX
+— the full ~18,600-chunk corpus is a multi-hour run. This is CPU-bound ONNX
 transformer inference; no batching or threading configuration found in testing
 materially changed it (see the note in
 [embeddings.py](../backend/app/rag/embeddings.py) about why `parallel=N`
@@ -282,10 +310,59 @@ the suggested tooling.
 
 Instead, `backend/app/llm/base.py` defines a minimal `LLMProvider` interface —
 `chat()`, `health()` — and the agent loop (`backend/app/agent/runtime.py`) is
-written against that interface only. `OllamaProvider` and
-`OpenAICompatProvider` both implement it. The result: one code path, two
-runtimes, and the cost is real — the SDKs' built-in session and tool plumbing
+written against that interface only. `OllamaProvider`,
+`OpenAICompatProvider`, `BedrockProvider` and `AzureOpenAIProvider` implement
+it. The result: one code path, several runtimes, and the cost is real — the SDKs' built-in session and tool plumbing
 is hand-rolled here instead. That trade is made explicitly, not silently.
+
+### Why not LangGraph
+
+LangGraph is the obvious alternative for a loop like this, so here is why the
+loop is hand-written, and when that should change.
+
+**What LangGraph would bring.** An explicit graph of nodes and conditional
+edges, a typed state object, checkpointing (a turn can pause and resume, even
+across a restart), interrupts for human approval, node-level streaming, and a
+diagram of the flow for free.
+
+**What this loop already has, without it.** The loop above *is* a small state
+machine: one model-call step, one tool step, and the guards are its
+conditional edges. Its state is the per-turn context (`ctx.searched`,
+`ctx.grounded`, the artifacts so far, which guards have fired), bounded by
+`MAX_ITERATIONS`. Streaming already exists (`on_event` feeds the SSE
+endpoint), as does persistence at the granularity the product needs: messages
+in Postgres, and every model call and tool call as a trace span.
+
+**What a LangGraph variant behind a flag would cost.**
+- A second implementation of every guard, which must stay in sync with the
+  first. The guards are the part of this system with the most documented bugs
+  (agent-transcripts 07, 09, 11), so two copies double the place those bugs live.
+- An adapter between `LLMProvider` and LangChain's chat-model and message
+  types, or a rewrite of the providers onto them.
+- A new dependency tree, for a `run_agent` of about 200 lines.
+- And no fix for the bugs that actually happened. Those were *state
+  bookkeeping* errors, a flag not set after a successful tool call (transcript
+  09). A graph framework would move that flag into a state object, not make
+  it correct. The scripted-model routing tests and the agent harness are what
+  catch that class of bug, and they would be needed either way.
+
+**When it would be worth it.** If a turn needed to *pause*, for example a
+human approving an artifact before it is created, or a long essay generation
+surviving a backend restart, checkpointing and interrupts are exactly that,
+and rebuilding them by hand would be the wrong call. Then the port is
+mechanical:
+
+| This loop | LangGraph |
+|---|---|
+| `chat_with_fallback(...)` step | `call_model` node |
+| tool execution, with the two `create_artifact` interceptions | `run_tools` node |
+| forced-retrieval, ungrounded and artifact-nudge guards | a conditional edge after `call_model` |
+| per-turn `ctx` | the graph's typed state |
+| `MAX_ITERATIONS` + closing no-tools turn | `recursion_limit` + a closing node |
+
+It should be done as a replacement, not a parallel variant. Its acceptance
+test would be the existing ones: the scripted-model routing tests in
+`tests/test_agent_routing.py` and the agent harness, unchanged and passing.
 
 ### The loop
 

@@ -1,0 +1,80 @@
+name: Load test
+
+# A short headless Locust run against the docker compose stack. Manual, because
+# a load test on a shared CI runner measures the runner as much as the app:
+# run it when you want a number, and read it with the hardware it was taken on
+# (the job summary records both). Also runs when the load test itself changes,
+# so a broken script is caught at review time rather than the next manual run.
+on:
+  workflow_dispatch:
+    inputs:
+      users:
+        description: Concurrent simulated users
+        default: "20"
+      spawn_rate:
+        description: Users started per second
+        default: "5"
+      run_time:
+        description: Duration (Locust format, e.g. 2m)
+        default: 2m
+      episodes:
+        description: Corpus episodes to ingest before the run
+        default: "40"
+  pull_request:
+    paths:
+      - .github/workflows/load-test.yml
+      - backend/loadtests/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: load-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  load-test:
+    name: Locust against docker compose
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      USERS: ${{ inputs.users || '20' }}
+      SPAWN_RATE: ${{ inputs.spawn_rate || '5' }}
+      RUN_TIME: ${{ inputs.run_time || '2m' }}
+      EPISODES: ${{ inputs.episodes || '40' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/loadtests/requirements.txt
+
+      - name: Install Locust
+        run: pip install -r backend/loadtests/requirements.txt
+
+      - name: Ingest, validate and load
+        run: bash backend/loadtests/compose_run.sh
+
+      - name: Job summary
+        if: always()
+        run: cat backend/loadtests/results/summary.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Publish CSV and HTML results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-test-results
+          path: backend/loadtests/results/
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Backend logs
+        if: failure()
+        run: docker compose logs backend | tail -200
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

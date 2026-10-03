@@ -47,17 +47,71 @@ def by_name(results: list[checks.Check]) -> dict[str, checks.Check]:
     return {c.name: c for c in results}
 
 
-async def test_a_clean_knowledge_base_passes_every_check(db):
-    await seed(db)
-    results = await checks.run_all(db, expected_episodes=2)
+def corpus(root, monkeypatch, folders: dict[str, tuple[str, str]], limit: int = 0) -> None:
+    """Transcripts on disk, folder -> (video id, body), and the checks pointed at them."""
+    for folder, (video_id, body) in folders.items():
+        path = root / "episodes" / folder / "transcript.md"
+        path.parent.mkdir(parents=True)
+        path.write_text(f"---\nguest: {folder}\ntitle: An episode | {folder}\n"
+                        f"video_id: {video_id}\n---\n{body}", encoding="utf-8")
+    monkeypatch.setenv("TRANSCRIPTS_LOCAL_PATH", str(root))
+    monkeypatch.setenv("INGEST_EPISODE_LIMIT", str(limit))
+    checks.get_settings.cache_clear()
+
+
+ONE, TWO = "Retention first. " * 60, "Pricing is a product decision. " * 60
+
+
+async def test_a_clean_knowledge_base_passes_every_check(db, tmp_path, monkeypatch):
+    a, b = await seed(db)
+    corpus(tmp_path, monkeypatch, {"a": (a.video_id, ONE), "b": (b.video_id, TWO)})
+    results = await checks.run_all(db)
     assert [c.name for c in results if c.status != "pass"] == []
-    assert "12 passed, 0 warnings, 0 failed" in render(results)
+    assert "13 passed, 0 warnings, 0 failed" in render(results)
 
 
 async def test_episode_count_must_match_the_corpus(db):
     await seed(db)
     result = await checks.episodes_match_corpus(db, 3)
     assert result.status == "fail" and "expected 3" in result.detail
+
+
+async def test_without_a_count_the_corpus_is_compared_as_ingestion_would(db, tmp_path,
+                                                                        monkeypatch):
+    a, b = await seed(db)
+    folders = {"a": (a.video_id, ONE), "b": (b.video_id, TWO), "c": ("id-c", ONE + TWO)}
+    corpus(tmp_path, monkeypatch, folders, limit=2)
+    assert (await checks.episodes_match_corpus(db, None, checks.load_corpus())).ok
+
+    monkeypatch.setenv("INGEST_EPISODE_LIMIT", "0")
+    checks.get_settings.cache_clear()
+    result = await checks.episodes_match_corpus(db, None, checks.load_corpus())
+    assert result.status == "fail" and result.examples == ["id-c"]
+    assert result.detail == "2 episodes, expected 3: 1 transcripts not ingested"
+
+
+async def test_an_episode_no_transcript_maps_to_is_stale(db, tmp_path, monkeypatch):
+    a, b = await seed(db)
+    corpus(tmp_path, monkeypatch, {"a": (a.video_id, ONE)})
+    result = await checks.episodes_match_corpus(db, None, checks.load_corpus())
+    assert result.status == "fail" and result.examples == [b.video_id]
+    assert "--prune" in result.detail
+
+
+async def test_shared_video_ids_are_counted_as_ingestion_stores_them(db, tmp_path,
+                                                                     monkeypatch):
+    """`a_` is a copy of `a`, so it's skipped. `z` is a different episode
+    carrying `a`'s metadata (the title names `a`), so it's stored under its
+    own folder's slug."""
+    a, _ = await seed(db)
+    corpus(tmp_path, monkeypatch, {"a": (a.video_id, ONE), "a_": (a.video_id, ONE + "x"),
+                                   "z": (a.video_id, TWO)})
+    loaded = checks.load_corpus()
+    assert loaded.episode_ids == {a.video_id, "slug:z"}
+    shared = checks.shared_video_ids(loaded)
+    assert shared.status == "warn" and shared.ok
+    assert shared.detail.startswith("1 copies skipped; 1 ingested without")
+    assert shared.examples == ["z", "a_"]
 
 
 async def test_an_episode_without_chunks_fails(db):

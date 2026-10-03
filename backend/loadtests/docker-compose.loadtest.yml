@@ -1,0 +1,8 @@
+# Overrides for backend/loadtests/compose_run.sh: ingest a subset of the
+# corpus on first boot, and keep request logging out of the measurement.
+services:
+  backend:
+    environment:
+      INGEST_ON_STARTUP: "true"
+      INGEST_EPISODE_LIMIT: "${EPISODES:-40}"
+      LOG_LEVEL: WARNING

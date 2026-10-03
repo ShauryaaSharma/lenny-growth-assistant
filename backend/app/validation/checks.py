@@ -18,6 +18,13 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.rag.ingest import (
+    BORROWED,
+    DUPLICATE,
+    corpus_video_ids,
+    discover_transcripts,
+    resolve_shared_video_ids,
+)
 
 # Lenny's Podcast began in 2019; anything earlier is a parsing error.
 DEFAULT_MIN_PUBLISH_DATE = date(2019, 1, 1)
@@ -53,19 +60,69 @@ async def _column(db: AsyncSession, sql: str, **params) -> list[str]:
 
 # --------------------------------------------------------------- the checks
 
-async def episodes_match_corpus(db: AsyncSession, expected: int | None) -> Check:
-    """Every transcript in the corpus became an episode, and nothing else did."""
+@dataclass
+class Corpus:
+    """What ingestion makes of the transcripts on this machine."""
+    episode_ids: set[str]                 # the video id each episode is stored under
+    shared: dict[Path, str] = field(default_factory=dict)  # DUPLICATE / BORROWED
+
+
+def load_corpus() -> Corpus | None:
+    """The transcripts ingestion would pick up (same discovery, same
+    INGEST_EPISODE_LIMIT, same shared-id resolution), or None when the corpus
+    isn't on this machine."""
+    settings = get_settings()
+    root = Path(settings.transcripts_local_path)
+    if not root.exists():
+        return None
+    files = discover_transcripts(root, settings.ingest_episode_limit)
+    return Corpus(corpus_video_ids(files), resolve_shared_video_ids(files))
+
+
+async def episodes_match_corpus(db: AsyncSession, expected: int | None,
+                                corpus: Corpus | None = None) -> Check:
+    """One episode per transcript, and nothing else.
+
+    Given the corpus, compares the stored video ids with the ones ingestion
+    produces from it: a row no transcript maps to is stale (an episode removed
+    upstream, or left by an older ingest), and a transcript with no row was
+    never ingested. Otherwise compares a count."""
     name = "episode count matches the corpus"
-    if expected is None:
-        corpus = Path(get_settings().transcripts_local_path)
-        if corpus.exists():
-            expected = len(list(corpus.glob("episodes/*/transcript.md")))
+    if expected is None and corpus is not None:
+        stored = set(await _column(db, "SELECT video_id FROM episodes"))
+        stale = sorted(stored - corpus.episode_ids)
+        missing = sorted(corpus.episode_ids - stored)
+        problems = []
+        if stale:
+            problems.append(f"{len(stale)} from no transcript "
+                            "(python -m app.rag.ingest --prune removes them)")
+        if missing:
+            problems.append(f"{len(missing)} transcripts not ingested")
+        return _result(name, len(problems), f"{len(stored)} episodes, one per transcript",
+                       f"{len(stored)} episodes, expected {len(corpus.episode_ids)}: "
+                       + "; ".join(problems), stale + missing)
     if expected is None:
         return Check(name, "warn", "no reference count: pass --expected-episodes or "
                                    "make TRANSCRIPTS_LOCAL_PATH available")
     actual = await _scalar(db, "SELECT count(*) FROM episodes")
     return _result(name, actual != expected, f"{actual} episodes, as expected",
                    f"{actual} episodes, expected {expected}")
+
+
+def shared_video_ids(corpus: Corpus | None) -> Check:
+    """Transcripts that share a video id upstream (see
+    `app.rag.ingest.resolve_shared_video_ids`). Ingestion handles them, so this
+    is a warning: the fix -- the right metadata -- belongs upstream."""
+    name = "no transcripts share a video id"
+    if corpus is None:
+        return Check(name, "warn", "corpus not available to check")
+    copies = sorted(path.parent.name for path, what in corpus.shared.items()
+                    if what == DUPLICATE)
+    borrowed = sorted(path.parent.name for path, what in corpus.shared.items()
+                      if what == BORROWED)
+    return _result(name, len(corpus.shared), "every transcript has its own video id",
+                   f"{len(copies)} copies skipped; {len(borrowed)} ingested without the "
+                   "id, link, title and date they shared", borrowed + copies, warn_only=True)
 
 
 async def every_episode_has_chunks(db: AsyncSession) -> Check:
@@ -220,8 +277,10 @@ async def sample_is_reachable(db: AsyncSession, sample: int) -> list[Check]:
 
 async def run_all(db: AsyncSession, *, expected_episodes: int | None = None,
                   earliest: date = DEFAULT_MIN_PUBLISH_DATE, sample: int = 20) -> list[Check]:
+    corpus = load_corpus()
     return [
-        await episodes_match_corpus(db, expected_episodes),
+        await episodes_match_corpus(db, expected_episodes, corpus),
+        shared_video_ids(corpus),
         await every_episode_has_chunks(db),
         await chunk_ordinals_are_contiguous(db),
         await no_orphan_chunks(db),

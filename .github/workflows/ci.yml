@@ -71,7 +71,7 @@ jobs:
       # Strict on the test code this workflow introduced. The rest of the tree
       # has pre-existing findings that belong in their own cleanup change.
       - name: Lint
-        run: ruff check tests/test_api.py tests/test_chat_stream.py tests/test_search_filters.py tests/test_citations.py tests/test_mock_llm.py tests/test_contract_regressions.py tests/test_validation.py tests/test_cloud_providers.py tests/conftest.py loadtests devtools app/validation app/llm
+        run: ruff check tests/test_api.py tests/test_chat_stream.py tests/test_search_filters.py tests/test_citations.py tests/test_mock_llm.py tests/test_contract_regressions.py tests/test_validation.py tests/test_ingest.py tests/test_cloud_providers.py tests/conftest.py loadtests devtools app/validation app/llm
 
       - name: Migrations apply to an empty database
         env:

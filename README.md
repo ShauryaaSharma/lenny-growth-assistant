@@ -33,7 +33,7 @@ Runs entirely on your machine. No API key required.
 
 | Capability | Notes |
 |---|---|
-| **Grounded Q&A** | Hybrid retrieval over 303 episodes. Every answer cites episode, guest, and a timestamped YouTube deep link -- and lists only the sources it actually cites, numbered to match the text. |
+| **Grounded Q&A** | Hybrid retrieval over 296 episodes (from 303 transcripts, once duplicate copies are dropped). Every answer cites episode, guest, and a timestamped YouTube deep link -- and lists only the sources it actually cites, numbered to match the text. |
 | **Guest and date filters** | "What did Casey Winters say about retention since 2023?" narrows the search to that guest and period -- inside both retrieval arms, so other guests can't crowd them out -- and says plainly when no episode matches. |
 | **Honest refusal** | If nothing in the corpus clears the relevance floor, it says so instead of answering from the model's own knowledge -- and distinguishes "no such guest", "that guest didn't cover it" and "the podcast doesn't cover it". |
 | **Live progress** | A turn on a local model can take a minute or more; the chat shows each step as it happens ("Searching transcripts for ... -- 8 passages from 3 episodes") and the answer once it has passed the grounding guards. |
@@ -95,7 +95,7 @@ For an evaluator checking requirements against implementation directly:
 |---|---|
 | 3.1 API, sessions, persistence | FastAPI (`backend/app/api/`), sessions scoped at the query level (`routes_sessions.py`), Postgres via SQLAlchemy (`db/models.py`) |
 | 3.2 Flexible LLM configuration | `LLMProvider` interface (`llm/base.py`), Ollama + OpenAI-compatible adapters, one env var toggle -- see [Switching models](#switching-models) |
-| 3.3 Knowledge base | 303-episode corpus, chunked on speaker turns, embedded, indexed (pgvector HNSW + Postgres FTS) -- see [architecture.md#ingestion-and-retrieval-flow](docs/architecture.md#ingestion-and-retrieval-flow) |
+| 3.3 Knowledge base | 303 transcripts (296 episodes), chunked on speaker turns, embedded, indexed (pgvector HNSW + Postgres FTS) -- see [architecture.md#ingestion-and-retrieval-flow](docs/architecture.md#ingestion-and-retrieval-flow) |
 | 4.1 Grounded conversational assistant | Hybrid retrieval + hard grounding floor + forced-retrieval and ungrounded guards, including a tool-call-level guard closing a real live hallucination path -- see [architecture.md#agent-layer](docs/architecture.md#agent-layer); grounding rate, false-ground rate, and agent-level routing correctness all actually measured, not just claimed -- see [Evaluation](#evaluation) |
 | 4.2 Ship 30 for 30 skill | `backend/app/skills/ship30/` -- principles as data, outline→draft→rubric→revise pipeline |
 | 4.3 Artifact generation + viewer | `create_artifact` tool + `ArtifactViewer.tsx`, sandboxed rendering -- see [architecture.md#security](docs/architecture.md#security) |
@@ -137,8 +137,8 @@ docker compose up --build
 Then open **http://localhost:3000**.
 
 On first boot the backend runs its migrations and then seeds the knowledge base
-in the background — cloning the transcript corpus, chunking 303 episodes, and
-embedding ~17,800 passages. Measured on a 16-thread CPU-only box, embedding the
+in the background — cloning the transcript corpus, chunking 303 transcripts
+into 296 episodes, and embedding ~17,700 passages. Measured on a 16-thread CPU-only box, embedding the
 **full corpus takes several hours** — CPU-bound transformer inference at this
 scale is genuinely slow without a GPU, and no software fix changes that. The UI
 shows a banner while it runs and un-blocks itself as soon as the first episodes
@@ -482,6 +482,21 @@ Safe to run on a schedule:
 ```bash
 docker compose exec backend python -m app.rag.ingest
 ```
+
+**Remove episodes that no transcript maps to any more**, ones deleted
+upstream, or rows left from an older ingest (see below):
+
+```bash
+docker compose exec backend python -m app.rag.ingest --prune
+```
+
+Pruning is never automatic, since a partial clone would otherwise empty the
+knowledge base, and it refuses to run with `INGEST_EPISODE_LIMIT` set.
+
+**Upgrading a knowledge base ingested before the transcript-layout and
+shared-video-id fixes** ([agent-transcripts/18](agent-transcripts/18-a-tenth-of-the-corpus-had-no-chunks.md)):
+run the two commands above once. The ingest re-embeds only the episodes that
+change; `--prune` then removes the 6 rows left under ambiguous shared ids.
 
 **Audit what happened.** Every run writes an `ingestion_runs` row with counts,
 status, and any error.
