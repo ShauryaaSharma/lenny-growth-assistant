@@ -71,7 +71,7 @@ jobs:
       # Strict on the test code this workflow introduced. The rest of the tree
       # has pre-existing findings that belong in their own cleanup change.
       - name: Lint
-        run: ruff check tests/test_api.py tests/test_chat_stream.py tests/test_search_filters.py tests/test_citations.py tests/test_mock_llm.py tests/conftest.py loadtests devtools
+        run: ruff check tests/test_api.py tests/test_chat_stream.py tests/test_search_filters.py tests/test_citations.py tests/test_mock_llm.py tests/test_contract_regressions.py tests/conftest.py loadtests devtools
 
       - name: Migrations apply to an empty database
         env:
@@ -158,7 +158,7 @@ jobs:
         working-directory: backend
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
 
       - name: Migrate and seed the fixture corpus
         working-directory: backend
@@ -192,13 +192,28 @@ jobs:
             --reporters cli,junit \
             --reporter-junit-export ${{ runner.temp }}/newman/junit.xml
 
-      - name: Publish Newman results
+      # Generated requests against every non-LLM operation, each response
+      # checked against /openapi.json: no 5xx, only documented status codes,
+      # bodies matching their schemas (errors included), invalid input
+      # rejected. A fixed seed keeps a failure reproducible.
+      - name: Contract tests (Schemathesis)
+        run: >-
+          schemathesis run http://127.0.0.1:8000/openapi.json
+          --experimental=openapi-3.1
+          --checks all
+          --exclude-path-regex chat
+          --hypothesis-max-examples 100
+          --hypothesis-seed 1
+          --junit-xml ${{ runner.temp }}/schemathesis-junit.xml
+
+      - name: Publish Newman and contract results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: newman
+          name: newman-and-contract
           path: |
             ${{ runner.temp }}/newman/junit.xml
+            ${{ runner.temp }}/schemathesis-junit.xml
             ${{ runner.temp }}/api.log
             ${{ runner.temp }}/mock_llm.log
           retention-days: 14

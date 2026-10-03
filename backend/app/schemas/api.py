@@ -27,12 +27,55 @@ class ErrorResponse(BaseModel):
     error: ErrorDetail
 
 
+class FieldError(BaseModel):
+    loc: str = Field(description="Where the problem is, e.g. `body.query`")
+    msg: str
+
+
+class ValidationErrorDetail(ErrorDetail):
+    fields: list[FieldError] = Field(default_factory=list)
+
+
+class ValidationErrorResponse(BaseModel):
+    """What every 422 actually returns (see `validation_error` in main.py),
+    replacing FastAPI's default `{"detail": [...]}` in the OpenAPI schema."""
+
+    error: ValidationErrorDetail
+
+
+# ---------------------------------------------------- text Postgres can store
+
+
+def reject_nul(value: Any) -> Any:
+    """PostgreSQL `text` and `jsonb` cannot hold U+0000, and asyncpg turns
+    one into a server error -- found by Schemathesis: a session titled
+    with a single NUL character was a 500. Rejecting it at validation makes
+    it the 422 the schema documents. Recurses into dicts and lists, since
+    `user_metadata` is stored as jsonb."""
+    if isinstance(value, str):
+        if "\x00" in value:
+            raise ValueError("must not contain NUL (U+0000) characters")
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            reject_nul(key)
+            reject_nul(item)
+    elif isinstance(value, list):
+        for item in value:
+            reject_nul(item)
+    return value
+
+
 # ---------------------------------------------------------------- sessions
 
 
 class SessionCreate(BaseModel):
     title: str | None = Field(default=None, max_length=200)
     user_metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("title", "user_metadata")
+    @classmethod
+    def storable(cls, v: Any) -> Any:
+        return reject_nul(v)
 
 
 class SessionSummary(BaseModel):
@@ -100,6 +143,7 @@ class ChatRequest(BaseModel):
     @field_validator("message")
     @classmethod
     def not_blank(cls, v: str) -> str:
+        reject_nul(v)
         stripped = v.strip()
         if not stripped:
             raise ValueError("message cannot be blank")
@@ -181,6 +225,11 @@ class SearchRequest(BaseModel):
                               description="Only this guest's episodes (case-insensitive, partial)")
     since: date | None = Field(default=None, description="Earliest publish date")
     until: date | None = Field(default=None, description="Latest publish date")
+
+    @field_validator("query", "guest")
+    @classmethod
+    def storable(cls, v: str | None) -> str | None:
+        return reject_nul(v)
 
     @model_validator(mode="after")
     def range_is_ordered(self) -> SearchRequest:

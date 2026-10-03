@@ -13,12 +13,13 @@ import uuid
 
 from fastapi import APIRouter, Query
 
+from app.api.errors import INVALID
 from app.memory import trace
 
 router = APIRouter(prefix="/api/sessions", tags=["traces"])
 
 
-@router.get("/{session_id}/trace")
+@router.get("/{session_id}/trace", responses=INVALID)
 async def get_session_trace(
     session_id: uuid.UUID,
     request_id: str | None = Query(default=None, description="Scope to one turn"),

@@ -109,6 +109,10 @@ def create_app() -> FastAPI:
     async def request_context(request: Request, call_next):
         """Tag every request with an id and log its outcome and duration."""
         rid = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
+        # Also kept on the request: the context var is reset in `finally`
+        # below, before Starlette's outermost handler turns an unhandled
+        # exception into a 500 -- see `unhandled`.
+        request.state.request_id = rid
         token = request_id_ctx.set(rid)
         started = time.perf_counter()
         try:
@@ -189,14 +193,25 @@ def create_app() -> FastAPI:
         )
 
     @app.exception_handler(Exception)
-    async def unhandled(_request: Request, exc: Exception):
-        log.exception("unhandled_exception")
-        return envelope(
-            "internal_error",
-            "An unexpected error occurred.",
-            "Check the server logs for the matching request_id.",
-            500,
-        )
+    async def unhandled(request: Request, exc: Exception):
+        # This runs after the request middleware has reset the request-id
+        # context var, so both the log line and the response used to say
+        # "-" -- on exactly the errors whose hint is "find the matching
+        # request_id in the logs". Restore it from the request for both.
+        rid = getattr(request.state, "request_id", "-")
+        token = request_id_ctx.set(rid)
+        try:
+            log.exception("unhandled_exception")
+            response = envelope(
+                "internal_error",
+                "An unexpected error occurred.",
+                "Check the server logs for the matching request_id.",
+                500,
+            )
+        finally:
+            request_id_ctx.reset(token)
+        response.headers["X-Request-ID"] = rid
+        return response
 
     app.include_router(routes_health.router)
     app.include_router(routes_sessions.router)

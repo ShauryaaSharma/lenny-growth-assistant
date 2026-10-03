@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent.runtime import AgentResult, run_agent
+from app.api.errors import INVALID, MODEL_PROVIDER, NOT_FOUND
 from app.api.routes_sessions import _to_message_out, load_session
 from app.db.models import Artifact, Message
 from app.db.session import get_db, get_session_factory
@@ -132,7 +133,8 @@ async def _finish_turn(db: AsyncSession, session_id: uuid.UUID, result: AgentRes
     )
 
 
-@router.post("/sessions/{session_id}/chat", response_model=ChatResponse)
+@router.post("/sessions/{session_id}/chat", response_model=ChatResponse,
+             responses={**NOT_FOUND, **INVALID, **MODEL_PROVIDER})
 async def chat(
     session_id: uuid.UUID,
     payload: ChatRequest,
@@ -154,7 +156,7 @@ async def chat(
     return await _finish_turn(db, session_id, result)
 
 
-@router.post("/sessions/{session_id}/chat/stream")
+@router.post("/sessions/{session_id}/chat/stream", responses={**NOT_FOUND, **INVALID})
 async def chat_stream(
     session_id: uuid.UUID,
     payload: ChatRequest,
@@ -231,7 +233,7 @@ def _error_event(code: str, message: str, hint: str, status_code: int) -> dict[s
                       "request_id": request_id_ctx.get()}}
 
 
-@router.post("/search", response_model=SearchResponse, tags=["debug"])
+@router.post("/search", response_model=SearchResponse, tags=["debug"], responses=INVALID)
 async def debug_search(
     payload: SearchRequest, db: AsyncSession = Depends(get_db)
 ) -> SearchResponse:

@@ -14,6 +14,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.api.errors import INVALID, NOT_FOUND
 from app.db.models import Artifact, Message, Session
 from app.db.session import get_db
 from app.logging import get_logger
@@ -28,6 +29,8 @@ from app.schemas.api import (
 
 log = get_logger(__name__)
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
+
+PG_BIGINT_MAX = 2**63 - 1
 
 
 async def load_session(db: AsyncSession, session_id: uuid.UUID) -> Session:
@@ -60,7 +63,8 @@ def _to_message_out(m: Message) -> MessageOut:
     )
 
 
-@router.post("", response_model=SessionSummary, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=SessionSummary, status_code=status.HTTP_201_CREATED,
+             responses=INVALID)
 async def create_session(
     payload: SessionCreate, db: AsyncSession = Depends(get_db)
 ) -> SessionSummary:
@@ -80,10 +84,12 @@ async def create_session(
     )
 
 
-@router.get("", response_model=list[SessionSummary])
+@router.get("", response_model=list[SessionSummary], responses=INVALID)
 async def list_sessions(
     limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
+    # Postgres OFFSET is a bigint. Unbounded, one past its maximum overflowed
+    # in the driver and became a 500 -- found by Schemathesis.
+    offset: int = Query(default=0, ge=0, le=PG_BIGINT_MAX),
     db: AsyncSession = Depends(get_db),
 ) -> list[SessionSummary]:
     counts = (
@@ -113,7 +119,7 @@ async def list_sessions(
     ]
 
 
-@router.get("/{session_id}", response_model=SessionDetail)
+@router.get("/{session_id}", response_model=SessionDetail, responses={**NOT_FOUND, **INVALID})
 async def get_session(
     session_id: uuid.UUID, db: AsyncSession = Depends(get_db)
 ) -> SessionDetail:
@@ -146,6 +152,7 @@ async def get_session(
 
 @router.delete(
     "/{session_id}",
+    responses={**NOT_FOUND, **INVALID},
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
     # `from __future__ import annotations` turns the `-> None` return hint into
