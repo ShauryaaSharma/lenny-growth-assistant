@@ -175,19 +175,28 @@ class TestTranscriptLayouts:
         assert self.turns(body) == [("Asha Sharma", 4, "Agents change the org chart."),
                                     ("Lenny", 3723, "Say more.")]
 
-    def test_a_bare_timestamp_continues_the_previous_speaker(self):
+    def test_a_bare_timestamp_is_dropped_and_the_turn_goes_on(self):
         body = "\nLenny (00:00:55):\nWelcome to the show.\n\n(00:01:21):\nToday my guest is Ada.\n"
-        assert self.turns(body) == [("Lenny", 55, "Welcome to the show."),
-                                    ("Lenny", 81, "Today my guest is Ada.")]
+        assert self.turns(body) == [
+            ("Lenny", 55, "Welcome to the show.\n\nToday my guest is Ada.")]
+
+    def test_a_multi_paragraph_ad_read_stays_one_sponsor_turn(self):
+        """Splitting at the bare timestamp would leave the second paragraph
+        unflagged -- it has no marker of its own -- and make ad copy
+        retrievable."""
+        body = ("\nLenny (00:01:00):\nThis episode is brought to you by DX.\n\n(00:01:20):\n"
+                "DX measures engineering productivity for teams.\n\n"
+                "Lenny (00:02:00):\nNow, on to my guest.\n")
+        assert [t.is_sponsor for t in parse_turns(body)] == [True, False]
 
     def test_one_line_turns_with_a_bracketed_timestamp(self):
         body = ("\n[00:00:00] Ryan: Product Hunt started in 2013.\n"
                 "[00:02:12] Hey Ashley, how many SaaS companies import CSVs: most?\n"
                 "[00:02:22] Ashley: At least 40%.\n")
         assert self.turns(body) == [
-            ("Ryan", 0, "Product Hunt started in 2013."),
-            # No name-like label before the colon: the previous speaker continues.
-            ("Ryan", 132, "Hey Ashley, how many SaaS companies import CSVs: most?"),
+            # No name-like label before the colon: the previous turn goes on.
+            ("Ryan", 0, "Product Hunt started in 2013.\n"
+                        "Hey Ashley, how many SaaS companies import CSVs: most?"),
             ("Ashley", 142, "At least 40%."),
         ]
 

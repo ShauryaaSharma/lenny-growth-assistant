@@ -29,7 +29,8 @@ from pathlib import Path
 import yaml
 
 # `Speaker (HH:MM:SS):`, `Speaker (MM:SS):`, or a bare `(MM:SS):` meaning the
-# previous speaker continues -- all three occur in the upstream corpus.
+# previous speaker continues (dropped; their turn goes on) -- all three occur
+# in the upstream corpus.
 TURN_RE = re.compile(
     r"^(?P<speaker>[^\n(]{0,120}?)\s*\((?P<ts>(?:\d{1,2}:)?\d{1,3}:\d{2})\):\s*$"
 )
@@ -37,8 +38,8 @@ TURN_RE = re.compile(
 # layout above, and only take a name-like speaker label (one to five
 # capitalised words), so a sentence containing a colon is not mistaken for one.
 _NAME = r"[A-Z][\w'.-]*(?: [A-Z][\w'.-]*){0,4}"
-# `[HH:MM:SS] Speaker: text` on one line; without a speaker, the previous one
-# continues.
+# `[HH:MM:SS] Speaker: text` on one line; without a speaker, the text
+# continues the previous turn.
 INLINE_TURN_RE = re.compile(
     rf"^\[(?P<ts>(?:\d{{1,2}}:)?\d{{1,3}}:\d{{2}})\]\s*(?:(?P<speaker>{_NAME}):\s*)?(?P<text>.*)$"
 )
@@ -210,19 +211,22 @@ def _parse(body: str, pattern: re.Pattern[str]) -> list[Turn]:
     for line in body.splitlines():
         match = pattern.match(line.strip())
         if match:
-            flush()
-            buffer = []
             groups = match.groupdict()
-            # A timestamp with no speaker continues the previous one.
-            speaker = (groups["speaker"] or "").strip() or (
-                current.speaker if current else "Unknown speaker")
+            speaker = (groups["speaker"] or "").strip()
+            if not speaker and current is not None:
+                # A timestamp with no speaker: the same speaker carries on, so
+                # the same turn does. Splitting here would break up multi-
+                # paragraph ad reads, which `_flag_sponsors` judges per turn.
+                if groups.get("text"):
+                    buffer.append(groups["text"])
+                continue
+            flush()
+            buffer = [groups["text"]] if groups.get("text") else []
             current = Turn(
-                speaker=speaker,
+                speaker=speaker or "Unknown speaker",
                 start_seconds=_ts_to_seconds(groups["ts"]) if groups.get("ts") else None,
                 text="",
             )
-            if groups.get("text"):
-                buffer.append(groups["text"])
         elif current is not None:
             buffer.append(line)
     flush()
