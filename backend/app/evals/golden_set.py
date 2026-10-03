@@ -67,9 +67,13 @@ GOLDEN_SET: list[GoldenQuestion] = [
         "Why will ChatGPT become a major growth channel?",
         expect_grounded=True, category="in_domain", expect_guest="Brian Balfour",
     ),
+    # The title of Elena Verna's 2.0 episode; its transcript says "product-led
+    # sales" 50 times, 3.0's twice. This once expected "Elena Verna 3.0":
+    # 3.0's transcript had overwritten 2.0's episode under 2.0's title, and the
+    # expectation matched that row (agent-transcripts/18).
     GoldenQuestion(
         "What's the ultimate guide to product-led sales?",
-        expect_grounded=True, category="in_domain", expect_guest="Elena Verna 3.0",
+        expect_grounded=True, category="in_domain", expect_guest="Elena Verna 2.0",
     ),
     # ---- In-domain: broad questions, no single guest expected ----
     GoldenQuestion(
