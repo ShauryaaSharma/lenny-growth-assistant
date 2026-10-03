@@ -1,4 +1,4 @@
-# 18 — A tenth of the corpus had no chunks
+# 18 — A tenth of the corpus had no chunks, and another tenth was mislabelled
 
 **Context:** the new knowledge-base checks (`python -m app.validation`) were
 wired into a load-test script that ingests a 40-episode subset before
@@ -84,27 +84,88 @@ change, and fixing it means sponsor detection per paragraph rather than per
 turn, which is a retrieval change to measure on its own, not to slip into a
 parser fix.
 
-## Defect 2 — one episode silently overwrote another
+## Defect 2 — 31 episodes silently overwrote 31 others
 
 **Symptom.** 40 transcripts, 38 episodes, and no duplicate video ids in the
 table.
 
-**Root cause.** Two pairs of folders upstream carry the same video id.
-`andy-raskin_` is a copy of `andy-raskin` (the files differ by 6 bytes).
-`benjamin-mann` holds Benjamin Mann's own transcript, about AI, but its title,
-URL and video id are copied from `benjamin-lauzier`'s marketplace episode.
-Episodes are keyed by video id, so the second of each pair took over the
-first's row: Benjamin Lauzier's episode was replaced by Benjamin Mann's
-transcript, under Lauzier's title and link. And because the two content hashes
-differ, every later ingestion run re-embedded both, one after the other.
+**Root cause.** Upstream, 31 video ids each appear in two folders: 62 of the
+303. In every pair, the title, URL, id and date of one episode were copied
+into the other's frontmatter; the `guest` field is each folder's own. Episodes
+are keyed by video id, so the second folder of each pair overwrote the first's
+row. On master's full ingest, 303 transcripts reported "ingested" became 272
+episodes, with no error. 31 transcripts were gone, and 31 episodes showed one
+guest's words under another's title and link. Because the two content hashes
+differ, every later run re-embedded both, one after the other.
 
-**Fix.** The first folder in sorted order is kept; the other is logged
-(`duplicate_video_id`, with both paths) and counted as skipped. A second run
-re-embeds nothing. For Andy Raskin that loses nothing. For Benjamin Mann it
-means his episode is not in the knowledge base until the upstream metadata is
-corrected, which is better than serving his words under another guest's title
-and link. The validation check now counts *distinct* video ids, and a separate
-warning lists the shared ones, so it stays visible until then.
+**My first fix was wrong, and the full-corpus run showed it.** I had found two
+pairs in a 40-episode subset (`andy-raskin` / `andy-raskin_`, a copy, and
+`benjamin-lauzier` / `benjamin-mann`), and fixed them by keeping the first
+folder in sorted order and skipping the second. Ingesting all 303 then showed
+31 pairs, and that the metadata's owner sorts first in only about half of
+them. `alexander-embiricos` sorts before `nilan-peiris` but carries Nilan's
+title, so "keep the first" kept Alexander's words under Nilan's title and
+dropped Nilan's real episode. It lost as many episodes as master, just visibly.
+
+**What the 31 pairs actually are**, compared over their first 3,000
+characters:
+
+- **7 are the same transcript twice** (similarity 0.98–1.00): `andy-raskin_`,
+  `fei-fei`, `hamelshreya`, `ethan-evans-20`, `nicole-forsgren-20`,
+  `wes-kao-20`, `yuhki-yamashata`. Skipping the copy loses nothing.
+- **24 are different episodes** (similarity 0.11–0.33), one of them carrying
+  the other's metadata.
+
+**Fix.** Ingestion resolves shared ids before it starts
+(`resolve_shared_video_ids`). Copies are skipped. For different episodes, the
+metadata belongs to the folder whose guest the title names. That's
+unambiguous in 18 pairs. In the other 6 the title can't tell them apart:
+Elena Verna 2.0 / 3.0, Jake Knapp & John Zeratsky / 2.0, Melissa / Melissa
+Tan, Shreyas Doshi / Live, Tomer Cohen / 2.0, Uri Levine / 2.0. Every folder
+that doesn't own the metadata keeps its own guest and text, but loses the
+borrowed id, URL, title and date. That's the same fallback the parser already
+uses for episodes whose upstream metadata is empty: cited by guest, with no
+link, and outside date filters. That's 30 transcripts, all now retrievable and
+none mislabelled.
+
+**A golden-set expectation that was fitted to the corrupted data.** The
+retrieval eval asked "What's the ultimate guide to product-led sales?" and
+expected guest `Elena Verna 3.0`. That's the title of Elena Verna's *2.0*
+episode: `elena-verna-20` says "product-led sales" 50 times,
+`elena-verna-30` twice. On master, 3.0's transcript had overwritten 2.0's row
+under 2.0's title, so "Elena Verna 3.0" was the guest that row showed, and the
+expectation was written to match. The fixed ingestion retrieves Elena Verna
+2.0's episode first, and the expectation is corrected to match the transcript.
+
+## Measured end to end, on the full corpus
+
+The same 303 transcripts, in two databases on the same machine: one ingested
+by master, one by all of the above (how it got there is below the table).
+Then `python -m app.evals.run_eval` on each, with the corrected golden set.
+
+| | master | fixed |
+|---|---|---|
+| Episodes | 272 | 296 |
+| Episodes with no chunks | 26 | 0 |
+| Chunks | 16,082 | 18,573 |
+| Grounded answer rate, 14 in-domain questions | 100% | 100% |
+| False-ground rate, 10 out-of-domain questions | 0% | 0% |
+| Guest-match precision, 7 questions | 4/7 | 5/7 |
+
+The guardrail that mattered most for a change that makes more text
+retrievable is the false-ground rate, and it held at 0%: the closest
+out-of-domain question stayed at 0.664 similarity against the 0.69 floor, and
+the weakest in-domain one at 0.712. The one guest-match change is the Elena Verna question: master's database doesn't
+contain her 2.0 episode at all.
+
+master's run reported 303 ingested, 0 skipped, `ok`, for 272 episodes. The
+fixed database was reached the way an existing deployment would be. First, an
+ingest with the parser fix and the first, keep-the-first duplicate rule
+(272 ingested, 31 skipped). Then one with the shared-id resolution over that
+data: 41 re-ingested, the rest unchanged. Then
+`python -m app.rag.ingest --prune`, which deleted exactly the 6 rows still
+under the shared ids of the ambiguous pairs. The counts above are after that,
+and a further run ingests 0 episodes and embeds nothing.
 
 ## What this shows
 
@@ -113,3 +174,9 @@ were invisible to every existing signal: the ingestion summary said `ok`, the
 API served, and the 3-episode CI fixture is in the one layout the parser
 already read. A check that asserts something about the *data* ("every episode
 has chunks") caught what checks on the *code* couldn't.
+
+It also shows the cost of fixing from a sample. The 40-episode subset had two
+shared ids; the corpus had 31, and the fix that was right for two was wrong for
+half of the rest. Only the full-corpus run, and a per-question look at the one
+eval number that moved, found that -- and found an eval expectation that had
+been written to match the bug.
