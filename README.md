@@ -230,7 +230,7 @@ annotated list. The values you are most likely to touch:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `LLM_PROVIDER` | `ollama` | `ollama` (local) or `openai_compat` (cloud) |
+| `LLM_PROVIDER` | `ollama` | `ollama` (local), `openai_compat`, `bedrock` or `azure_openai` (cloud) |
 | `OLLAMA_MODEL` | `llama3.2:3b` | Local model |
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | Reaches host Ollama from the container |
 | `LLM_BASE_URL` | HF router | Cloud endpoint |
@@ -275,6 +275,46 @@ LLM_API_KEY=hf_your_token
 
 Other tested endpoints: `https://api.openai.com/v1`,
 `https://api.groq.com/openai/v1`, `https://openrouter.ai/api/v1`.
+
+### AWS Bedrock
+
+Uses Bedrock's Converse API, the one request shape for every chat model Bedrock
+hosts (Nova, Claude, Llama, Mistral...):
+
+```
+LLM_PROVIDER=bedrock
+BEDROCK_REGION=us-east-1
+BEDROCK_MODEL_ID=amazon.nova-lite-v1:0
+AWS_BEARER_TOKEN_BEDROCK=your_bedrock_api_key
+```
+
+Instead of an API key, IAM credentials work too: `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY` and, for temporary credentials, `AWS_SESSION_TOKEN`.
+Requests are SigV4-signed in [`backend/app/llm/sigv4.py`](backend/app/llm/sigv4.py)
+(checked against AWS's documented example), so there is no boto3 dependency.
+Profiles and instance roles are not resolved; export their credentials instead.
+The model must be enabled for your account in that region.
+
+### Azure OpenAI
+
+```
+LLM_PROVIDER=azure_openai
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
+AZURE_OPENAI_DEPLOYMENT=your-deployment-name
+AZURE_OPENAI_API_KEY=your_key
+AZURE_OPENAI_API_VERSION=2024-10-21
+```
+
+The deployment name, not the model name, is what Azure routes on, so it is
+what the UI badge shows.
+
+Both adapters are tested against mocked HTTP in
+`backend/tests/test_cloud_providers.py`: request shape, tool-call translation,
+response parsing, and the mapping of each failure onto the typed errors that
+decide fallback. Neither has been run against a live account from this repo's
+CI. Bedrock's `/health/deep` entry reports whether credentials are configured,
+not that they work: Bedrock has no free endpoint to probe, and probing through
+Converse would spend tokens on every health check.
 
 The active provider is shown as a badge in the UI header and returned by
 `GET /api/config`, so you can always see which model actually answered.

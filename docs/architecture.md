@@ -632,6 +632,12 @@ either way, and pgvector is available as an extension on both.
 `LLM_API_KEY`. The adapter speaks the OpenAI `/v1/chat/completions` contract,
 which is a de facto standard across Hugging Face's router, OpenAI, Groq, and
 OpenRouter.
+AWS Bedrock (`LLM_PROVIDER=bedrock`, Converse API) and Azure OpenAI
+(`LLM_PROVIDER=azure_openai`) have their own adapters behind the same
+`LLMProvider` interface: Bedrock because Converse is a different request shape
+(system prompt, tool blocks and role alternation all differ), Azure because the
+same protocol sits at a deployment URL with a different key header. Both are
+covered in the README's "Switching models".
 
 **Behind a reverse proxy:** the streaming chat sends `Cache-Control:
 no-transform` and `X-Accel-Buffering: no`, which nginx honours. A proxy that

@@ -15,6 +15,7 @@ system harder to operate, not easier.
 from __future__ import annotations
 
 from app.config import get_settings
+from app.llm.azure_openai import AzureOpenAIProvider
 from app.llm.base import (
     ChatMessage,
     LLMError,
@@ -25,6 +26,7 @@ from app.llm.base import (
     ProviderHealth,
     ToolSpec,
 )
+from app.llm.bedrock import BedrockProvider
 from app.llm.ollama import OllamaProvider
 from app.llm.openai_compat import OpenAICompatProvider
 from app.logging import get_logger
@@ -41,7 +43,12 @@ def build_provider(name: str) -> LLMProvider:
         return OllamaProvider()
     if name == "openai_compat":
         return OpenAICompatProvider()
-    raise ValueError(f"Unknown LLM provider '{name}'. Expected 'ollama' or 'openai_compat'.")
+    if name == "bedrock":
+        return BedrockProvider()
+    if name == "azure_openai":
+        return AzureOpenAIProvider()
+    raise ValueError(f"Unknown LLM provider '{name}'. Expected 'ollama', 'openai_compat', "
+                     "'bedrock' or 'azure_openai'.")
 
 
 def get_provider(name: str | None = None) -> LLMProvider:

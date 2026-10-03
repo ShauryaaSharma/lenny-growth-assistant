@@ -41,6 +41,11 @@ log = get_logger(__name__)
 
 class OpenAICompatProvider(LLMProvider):
     name = "openai_compat"
+    # Overridden by the Azure adapter, which speaks the same protocol at
+    # different paths with a different key header.
+    chat_path = "/chat/completions"
+    models_path = "/models"
+    key_variable = "LLM_API_KEY"
 
     def __init__(
         self,
@@ -76,7 +81,7 @@ class OpenAICompatProvider(LLMProvider):
     ) -> LLMResponse:
         if not self.api_key:
             raise LLMAuthError(
-                "LLM_API_KEY is empty but LLM_PROVIDER=openai_compat. "
+                f"{self.key_variable} is empty but LLM_PROVIDER={self.name}. "
                 "Set a key, or switch LLM_PROVIDER=ollama to run fully locally."
             )
 
@@ -94,7 +99,7 @@ class OpenAICompatProvider(LLMProvider):
 
         started = time.perf_counter()
         try:
-            resp = await self._client.post("/chat/completions", json=payload)
+            resp = await self._client.post(self.chat_path, json=payload)
         except httpx.TimeoutException as exc:
             raise LLMTimeoutError(f"{self.base_url} timed out after {self.timeout}s") from exc
         except httpx.HTTPError as exc:
@@ -149,11 +154,11 @@ class OpenAICompatProvider(LLMProvider):
                 healthy=False,
                 provider=self.name,
                 model=self._model,
-                detail="LLM_API_KEY not set",
+                detail=f"{self.key_variable} not set",
             )
         started = time.perf_counter()
         try:
-            resp = await self._client.get("/models", timeout=8)
+            resp = await self._client.get(self.models_path, timeout=8)
             reachable = resp.status_code < 500
             detail = "ok" if reachable else f"HTTP {resp.status_code}"
         except Exception as exc:  # noqa: BLE001 - health probes never raise

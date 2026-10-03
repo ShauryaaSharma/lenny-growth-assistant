@@ -13,7 +13,7 @@ from typing import Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-ProviderName = Literal["ollama", "openai_compat", "none"]
+ProviderName = Literal["ollama", "openai_compat", "bedrock", "azure_openai", "none"]
 
 
 class Settings(BaseSettings):
@@ -44,6 +44,22 @@ class Settings(BaseSettings):
     llm_model: str = "Qwen/Qwen3-32B"
     llm_api_key: str = ""
     llm_timeout_seconds: int = 120
+
+    # --- AWS Bedrock (Converse API) ---
+    # Auth: a Bedrock API key, or IAM credentials (the standard AWS variable
+    # names, so an existing AWS environment works unchanged).
+    bedrock_region: str = "us-east-1"
+    bedrock_model_id: str = "amazon.nova-lite-v1:0"
+    aws_bearer_token_bedrock: str = ""
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    aws_session_token: str = ""
+
+    # --- Azure OpenAI ---
+    azure_openai_endpoint: str = ""
+    azure_openai_deployment: str = ""
+    azure_openai_api_key: str = ""
+    azure_openai_api_version: str = "2024-10-21"
 
     # --- Retrieval ---
     embedding_model: str = "BAAI/bge-small-en-v1.5"
@@ -88,21 +104,28 @@ class Settings(BaseSettings):
     @property
     def active_model_name(self) -> str:
         """The model string for whichever provider is currently selected."""
-        return self.ollama_model if self.llm_provider == "ollama" else self.llm_model
+        return {
+            "ollama": self.ollama_model,
+            "bedrock": self.bedrock_model_id,
+            "azure_openai": self.azure_openai_deployment,
+        }.get(self.llm_provider, self.llm_model)
 
     def describe_provider(self) -> dict[str, object]:
         """Provider metadata surfaced in the UI badge and /health/deep."""
-        if self.llm_provider == "ollama":
-            endpoint, key_required = self.ollama_base_url, False
-        else:
-            endpoint, key_required = self.llm_base_url, True
+        endpoint, key_required, key_present = {
+            "ollama": (self.ollama_base_url, False, bool(self.llm_api_key)),
+            "bedrock": (f"https://bedrock-runtime.{self.bedrock_region}.amazonaws.com", True,
+                        bool(self.aws_bearer_token_bedrock
+                             or (self.aws_access_key_id and self.aws_secret_access_key))),
+            "azure_openai": (self.azure_openai_endpoint, True, bool(self.azure_openai_api_key)),
+        }.get(self.llm_provider, (self.llm_base_url, True, bool(self.llm_api_key)))
         return {
             "provider": self.llm_provider,
             "model": self.active_model_name,
             "endpoint": endpoint,
             "is_local": self.llm_provider == "ollama",
             "api_key_required": key_required,
-            "api_key_present": bool(self.llm_api_key),
+            "api_key_present": key_present,
             "fallback_provider": self.llm_fallback_provider,
         }
 
