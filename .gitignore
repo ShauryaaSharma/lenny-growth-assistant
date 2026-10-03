@@ -46,3 +46,8 @@ backend/loadtests/results/
 .coverage
 coverage.xml
 htmlcov/
+
+# Playwright output
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
