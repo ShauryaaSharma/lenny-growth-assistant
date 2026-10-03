@@ -104,6 +104,17 @@ before returning, and `create_artifact` sanitises its content
 (`security/sanitize.py`) before registering it — both described in
 [Agent layer](#agent-layer) below.
 
+**Since this trace was captured,** two steps work differently:
+
+- **Step 1.** The UI calls `POST /api/sessions/{id}/chat/stream`, which runs the
+  identical turn and reports it over Server-Sent Events as it goes — see
+  [Streaming progress](#streaming-progress). `/chat` still exists and returns
+  the same response in one piece.
+- **Step 8.** The message no longer carries every retrieved passage. It carries
+  only those the answer cites with `[n]` — see
+  [Citations](#citations) — so a turn like this one stores the handful of
+  sources the answer used rather than all 8.
+
 ---
 
 ## Database schema
@@ -236,9 +247,26 @@ similarity vs. `ts_rank`) without needing to calibrate one against the other.
 scores are rank-derived: even a query the corpus cannot answer produces a
 top-ranked hit with a plausible-looking fused score, because rank position
 alone says nothing about absolute relevance. The guard instead checks raw
-cosine similarity against `RETRIEVAL_MIN_SIMILARITY` (default 0.55), which *is*
+cosine similarity against `RETRIEVAL_MIN_SIMILARITY` (default 0.69), which *is*
 an absolute signal. Below it, the search tool returns an explicit instruction
 to decline rather than answer — see [Agent layer](#agent-layer).
+
+**Guest and date filters** (`SearchFilters`) narrow a search to one guest
+(case-insensitive, partial, so `kiriti` finds a joint episode) and/or a
+publish-date range. They are applied **inside both arms, before each is cut to
+its top 30** — never to the fused result. Filtering afterwards would keep only
+whichever of the 30 candidates happened to be that guest's, which is often
+none when other guests discuss the topic more; a test builds exactly that
+corpus and fails if the filter moves after the cut. With a filter, the vector
+arm orders by exact distance instead of the HNSW index, because an approximate
+index scan under a selective `WHERE` returns too few rows, while one guest's
+chunks are cheap to scan exactly. The unfiltered query is unchanged.
+
+A filter that matches no episode at all is reported as `no_matching_episodes`,
+separately from "nothing relevant": "that guest was never on the podcast" and
+"that guest never discussed this" are different answers. Dates accept `2023`
+or `2023-05` as the whole period; an episode with no publish date never
+satisfies a date range.
 
 ---
 
@@ -376,9 +404,52 @@ small models, so the registry stays deliberately small (`backend/app/agent/tools
 
 | Tool | Purpose |
 |---|---|
-| `search_transcripts` | The grounding primitive. Returns numbered excerpts or an explicit refusal instruction. |
+| `search_transcripts` | The grounding primitive. Returns numbered excerpts or an explicit refusal instruction. Optional `guest`, `since` and `until` narrow it (see [Retrieval](#retrieval-backendappragretrieverpy)). |
 | `write_ship30_essay` | Delegates to the essay pipeline; registers the result as an artifact rather than returning 1,250 words through the chat turn. |
 | `create_artifact` | Sanitises and registers a markdown/HTML document. |
+
+The filters are parameters on the existing tool rather than a fourth tool, for
+the reason above. Even so, run against `llama3.2:3b` the model never used the
+`guest` parameter — it put the guest's name into the query text instead. So
+the tool applies one more piece of deterministic insurance: if the model
+passed no guest and the **user's message names exactly one known guest in
+full**, it filters by them. First names alone ("Adam" is two guests here)
+never match, a message naming two guests is a comparison rather than a filter,
+and the model's own `guest` argument always wins.
+
+### Citations
+
+Each search used to number its excerpts from `[1]`, so in a turn with two
+searches `[1]` could mean either, and the message stored every passage
+retrieved. Found live: asked what Elon Musk said, the agent found passages from
+four unrelated guests above the relevance floor, correctly answered that the
+transcripts had nothing from him — and listed all four guests as its sources.
+
+Now excerpts are numbered **per turn** (`ToolContext.number`): a passage keeps
+its number if a second search returns it, and new passages continue the count.
+At the end of the turn, `ToolContext.cited()` keeps only the passages whose
+`[n]` appears in the answer or in a document it created, each carrying its `n`
+so the UI labels it to match the text; an answer that cites nothing carries no
+sources. An essay keeps its own evidence list, which the Ship 30 rubric already
+checks. `grounded` is unchanged by any of this — it reports what retrieval
+found, not what the answer used.
+
+### Streaming progress
+
+`run_agent` takes an optional `on_event` callback and reports each model call
+(`thinking`), each tool call before and after (`tool_start`, `tool_end` with a
+short summary such as "8 passages from 3 episodes"), and each guard that
+intervenes (`guard`). `POST /api/sessions/{id}/chat/stream` relays these as
+Server-Sent Events and ends with `done` (exactly what `/chat` returns) or
+`error` (the usual envelope).
+
+It streams **progress, not draft text**, on purpose: the guards above reject
+drafts after they are written, and streaming a draft would show the user the
+ungrounded text they exist to stop. The turn runs as its own task with its own
+database session, so a closed tab still gets its answer saved, and a keepalive
+comment every 15 s stops proxies closing the connection during a long model
+call. Measured against `llama3.2:3b` on a CPU-only laptop, turns took ~35 s
+(declining) to ~105 s (grounded answer) — the wait this exists for.
 
 ### Memory
 
@@ -477,9 +548,10 @@ asked for 1,250. This does, and it fixes it.
 | GET | `/api/sessions/{id}` | Full session detail: messages, citations, artifact summaries. |
 | DELETE | `/api/sessions/{id}` | Delete a session (cascades to messages and artifacts). |
 | POST | `/api/sessions/{id}/chat` | Run one agent turn. |
+| POST | `/api/sessions/{id}/chat/stream` | The same turn, reported as it runs over Server-Sent Events — see [Streaming progress](#streaming-progress). |
 | GET | `/api/artifacts?session_id=` | List artifacts, optionally scoped to a session. |
 | GET | `/api/artifacts/{id}` | Fetch one artifact's full sanitised content. |
-| POST | `/api/search` | Retrieval only, no model in the loop — isolates "is this a retrieval problem or a model problem?" in one request. |
+| POST | `/api/search` | Retrieval only, no model in the loop — isolates "is this a retrieval problem or a model problem?" in one request. Takes the same `guest` / `since` / `until` filters as the agent. |
 | GET | `/api/sessions/{id}/trace` | Execution trace: every LLM/tool span for the session, or one turn if `?request_id=` is given — see [Memory](#memory). |
 
 Every error response shares one envelope:
@@ -561,6 +633,11 @@ either way, and pgvector is available as an extension on both.
 which is a de facto standard across Hugging Face's router, OpenAI, Groq, and
 OpenRouter.
 
+**Behind a reverse proxy:** the streaming chat sends `Cache-Control:
+no-transform` and `X-Accel-Buffering: no`, which nginx honours. A proxy that
+buffers responses regardless will deliver the progress events all at once at
+the end — the answer still arrives, but the point of streaming is lost.
+
 ---
 
 ## Observability
@@ -583,21 +660,33 @@ are reported independently, so a failure localises without reading logs at all.
 
 ## Testing strategy
 
-106 automated tests, split by what they need to be honest:
+300 automated tests, split by what they need to be honest:
 
 | Suite | What it covers | Needs |
 |---|---|---|
 | `test_chunking.py` | Frontmatter parsing, speaker-turn extraction, sponsor detection, token budgeting | Nothing — pure functions, run against real corpus files during development |
 | `test_sanitize.py` | 25 cases: every XSS/exfiltration vector attempted against the artifact sanitiser, plus false-positive checks | Nothing |
 | `test_ship30_skill.py` | Rubric scoring and revision-instruction generation, including the literal-`[n]`-placeholder regression | Nothing |
-| `test_agent_routing.py` | The three deterministic guards (forced-retrieval, ungrounded, forced-artifact) and the artifact-reminder mechanism, via a scripted `FakeProvider` | Nothing — no live model, so these run in well under a second and are fully deterministic |
+| `test_agent_routing.py` | The deterministic guards (forced-retrieval, ungrounded, forced-artifact, blocked ungrounded and redundant artifacts) and the artifact-reminder mechanism, via a scripted `FakeProvider` | Nothing — no live model, so these run in well under a second and are fully deterministic |
+| `test_citations.py` | Per-turn numbering and which sources an answer carries, including the live "refusal with four unrelated sources" case as a whole agent turn | Nothing |
+| `test_memory.py`, `test_eval_harness.py`, `test_agent_eval_harness.py` | Reducers and the SQLite trace store; the eval harnesses' own scoring arithmetic | Nothing |
 | `test_sessions.py` | Session isolation, cascade deletes, FK behaviour | Real Postgres (schema is Postgres-specific: JSONB, generated columns) |
 | `test_retriever.py` | Hybrid RRF fusion, grounding-guard thresholds, sponsor exclusion, citation formatting | Real Postgres + real embeddings (pgvector-specific SQL) |
+| `test_search_filters.py` | Guest/date filters inside both arms (including a corpus that breaks post-filtering), date parsing, guest detection from the user's message | Real Postgres + real embeddings for the integration half |
+| `test_api.py`, `test_chat_stream.py` | Every endpoint over HTTP: status codes, validation, the error envelope, persistence across a full turn; the stream's event sequence and that a rejected draft never appears in it | Real Postgres for the persistence half |
 
 Database-backed suites skip with a clear reason (`requires_db` in
 `conftest.py`) when no test database is reachable, rather than failing — so
 `pytest` stays useful on a bare checkout before `docker compose up` has ever
-run.
+run. CI is the exception: it sets `REQUIRE_TEST_DB=1`, so an unreachable
+database fails the build instead of quietly skipping the integration suites.
+
+**CI** (`.github/workflows/ci.yml`) runs the whole suite on every push against
+`pgvector/pgvector:pg16`, checks that the Alembic migration applies and rolls
+back, and lints the test code. **Load tests** (`backend/loadtests/`) run a
+Locust traffic mix against the API with p95 and error-rate limits; their first
+run found query embedding blocking the event loop under concurrency (see that
+directory's README for the before/after numbers).
 
 **What the suite deliberately does not do:** exercise a live model. Every
 routing test scripts the model's responses (`FakeProvider`), because a test
