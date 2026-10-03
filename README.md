@@ -33,9 +33,10 @@ Runs entirely on your machine. No API key required.
 
 | Capability | Notes |
 |---|---|
-| **Grounded Q&A** | Hybrid retrieval over 303 episodes. Every answer cites episode, guest, and a timestamped YouTube deep link. |
+| **Grounded Q&A** | Hybrid retrieval over 296 episodes (from 303 transcripts, once duplicate copies are dropped). Every answer cites episode, guest, and a timestamped YouTube deep link -- and lists only the sources it actually cites, numbered to match the text. |
 | **Guest and date filters** | "What did Casey Winters say about retention since 2023?" narrows the search to that guest and period -- inside both retrieval arms, so other guests can't crowd them out -- and says plainly when no episode matches. |
-| **Honest refusal** | If nothing in the corpus clears the relevance floor, it says so instead of answering from the model's own knowledge. |
+| **Honest refusal** | If nothing in the corpus clears the relevance floor, it says so instead of answering from the model's own knowledge -- and distinguishes "no such guest", "that guest didn't cover it" and "the podcast doesn't cover it". |
+| **Live progress** | A turn on a local model can take a minute or more; the chat shows each step as it happens ("Searching transcripts for ... -- 8 passages from 3 episodes") and the answer once it has passed the grounding guards. |
 | **Ship 30 essays** | A ~1,250-word essay skill with encoded writing principles and a programmatic quality gate. |
 | **Artifacts** | Markdown or HTML/CSS documents rendered in a sandboxed panel beside the chat. |
 | **Sessions** | Independent conversations, persisted in Postgres with full history and provenance. |
@@ -50,9 +51,9 @@ Runs entirely on your machine. No API key required.
 .
 ├── backend/
 │   ├── app/
-│   │   ├── agent/           # runtime.py (the agent loop + 3 deterministic guards),
+│   │   ├── agent/           # runtime.py (the agent loop + its deterministic guards),
 │   │   │                     prompts.py (system prompt, guard text), tools.py (registry)
-│   │   ├── api/              # FastAPI routers: chat, sessions, artifacts, health
+│   │   ├── api/              # FastAPI routers: chat (+ SSE stream), sessions, artifacts, health
 │   │   ├── db/                # SQLAlchemy models + async session lifecycle
 │   │   ├── llm/                # LLMProvider interface + Ollama / OpenAI-compat / registry
 │   │   ├── memory/                 # procedural.py (principles), reducers.py (pure state
@@ -65,11 +66,12 @@ Runs entirely on your machine. No API key required.
 │   │   ├── config.py, logging.py, main.py
 │   ├── alembic/                # one migration: the full schema
 │   ├── tests/                  # 300 tests -- see docs/architecture.md#testing-strategy
+│   ├── loadtests/              # Locust traffic mix with p95 / error-rate limits
 │   └── Dockerfile, requirements*.txt
 ├── frontend/
 │   ├── app/                  # Next.js app router: layout, page, global styles
 │   ├── components/            # ArtifactViewer (the sandboxed renderer), Composer,
-│   │                            MessageBubble, ProviderBadge, SessionSidebar
+│   │                            MessageBubble, ProgressFeed, ProviderBadge, SessionSidebar
 │   ├── lib/                    # typed API client + shared types
 │   └── Dockerfile
 ├── docs/
@@ -78,6 +80,7 @@ Runs entirely on your machine. No API key required.
 │   ├── design.md                # UI/UX principles, states, accessibility
 │   └── test-plan.md              # manual UI test plan
 ├── agent-transcripts/         # 13 entries: real defects (incl. 3 live hallucinations) found, fixed
+├── .github/workflows/ci.yml   # tests against Postgres + pgvector on every push
 ├── docker-compose.yml
 └── .env.example
 ```
@@ -92,7 +95,7 @@ For an evaluator checking requirements against implementation directly:
 |---|---|
 | 3.1 API, sessions, persistence | FastAPI (`backend/app/api/`), sessions scoped at the query level (`routes_sessions.py`), Postgres via SQLAlchemy (`db/models.py`) |
 | 3.2 Flexible LLM configuration | `LLMProvider` interface (`llm/base.py`), Ollama + OpenAI-compatible adapters, one env var toggle -- see [Switching models](#switching-models) |
-| 3.3 Knowledge base | 303-episode corpus, chunked on speaker turns, embedded, indexed (pgvector HNSW + Postgres FTS) -- see [architecture.md#ingestion-and-retrieval-flow](docs/architecture.md#ingestion-and-retrieval-flow) |
+| 3.3 Knowledge base | 303 transcripts (296 episodes), chunked on speaker turns, embedded, indexed (pgvector HNSW + Postgres FTS) -- see [architecture.md#ingestion-and-retrieval-flow](docs/architecture.md#ingestion-and-retrieval-flow) |
 | 4.1 Grounded conversational assistant | Hybrid retrieval + hard grounding floor + forced-retrieval and ungrounded guards, including a tool-call-level guard closing a real live hallucination path -- see [architecture.md#agent-layer](docs/architecture.md#agent-layer); grounding rate, false-ground rate, and agent-level routing correctness all actually measured, not just claimed -- see [Evaluation](#evaluation) |
 | 4.2 Ship 30 for 30 skill | `backend/app/skills/ship30/` -- principles as data, outline→draft→rubric→revise pipeline |
 | 4.3 Artifact generation + viewer | `create_artifact` tool + `ArtifactViewer.tsx`, sandboxed rendering -- see [architecture.md#security](docs/architecture.md#security) |
@@ -134,8 +137,8 @@ docker compose up --build
 Then open **http://localhost:3000**.
 
 On first boot the backend runs its migrations and then seeds the knowledge base
-in the background — cloning the transcript corpus, chunking 303 episodes, and
-embedding ~17,800 passages. Measured on a 16-thread CPU-only box, embedding the
+in the background — cloning the transcript corpus, chunking 303 transcripts
+into 296 episodes, and embedding ~17,700 passages. Measured on a 16-thread CPU-only box, embedding the
 **full corpus takes several hours** — CPU-bound transformer inference at this
 scale is genuinely slow without a GPU, and no software fix changes that. The UI
 shows a banner while it runs and un-blocks itself as soon as the first episodes
@@ -194,6 +197,13 @@ You want `"status": "ok"`, your provider `"healthy": true`, and
             │  (local)    │          │ (HF / OpenAI) │
             └─────────────┘          └───────────────┘
 ```
+
+The UI calls `POST /api/sessions/{id}/chat/stream`, which runs the same turn as
+`/chat` and reports it over Server-Sent Events: each model call, each search
+and what it found, each guard that intervenes, then the saved answer. Draft
+text is never streamed, because the guards can still reject a draft after it
+is written. The turn runs as its own task, so closing the tab does not lose
+the answer.
 
 Full detail, including the database schema and every endpoint, is in
 [docs/architecture.md](docs/architecture.md).
@@ -440,8 +450,10 @@ docker compose exec backend python -m app.rag.ingest
 
 **Everything is slow**
 
-Expected on CPU. A 3B model answers in roughly 10–30s; a 7B model can take
-minutes. Use `llama3.2:3b`, or point at a cloud provider.
+Expected on CPU. Measured on a CPU-only laptop, `llama3.2:3b` took about 35s
+to decline an off-topic question and about 105s for a grounded answer; a 7B
+model can take several minutes. The chat shows each step while it works. Use
+`llama3.2:3b`, or point at a cloud provider.
 
 **Is it retrieval or the model?**
 
@@ -452,7 +464,8 @@ curl -s -X POST http://localhost:8000/api/search -H 'Content-Type: application/j
 ```
 
 Good `similarity` scores here mean retrieval is fine and the problem is the
-model or the prompt.
+model or the prompt. The same endpoint takes the filters the agent uses, e.g.
+`"guest": "Casey Winters", "since": "2023-01-01"`.
 
 **Port already in use**
 
@@ -469,6 +482,21 @@ Safe to run on a schedule:
 ```bash
 docker compose exec backend python -m app.rag.ingest
 ```
+
+**Remove episodes that no transcript maps to any more**, ones deleted
+upstream, or rows left from an older ingest (see below):
+
+```bash
+docker compose exec backend python -m app.rag.ingest --prune
+```
+
+Pruning is never automatic, since a partial clone would otherwise empty the
+knowledge base, and it refuses to run with `INGEST_EPISODE_LIMIT` set.
+
+**Upgrading a knowledge base ingested before the transcript-layout and
+shared-video-id fixes** ([agent-transcripts/18](agent-transcripts/18-a-tenth-of-the-corpus-had-no-chunks.md)):
+run the two commands above once. The ingest re-embeds only the episodes that
+change; `--prune` then removes the 6 rows left under ambiguous shared ids.
 
 **Audit what happened.** Every run writes an `ingestion_runs` row with counts,
 status, and any error.
