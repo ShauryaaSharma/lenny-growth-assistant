@@ -18,6 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.rag.ingest import discover_transcripts
 
 # Lenny's Podcast began in 2019; anything earlier is a parsing error.
 DEFAULT_MIN_PUBLISH_DATE = date(2019, 1, 1)
@@ -54,12 +55,17 @@ async def _column(db: AsyncSession, sql: str, **params) -> list[str]:
 # --------------------------------------------------------------- the checks
 
 async def episodes_match_corpus(db: AsyncSession, expected: int | None) -> Check:
-    """Every transcript in the corpus became an episode, and nothing else did."""
+    """Every transcript in the corpus became an episode, and nothing else did.
+
+    Without an explicit count, the reference is the transcripts ingestion
+    would pick up -- the same discovery function, honouring
+    INGEST_EPISODE_LIMIT -- so a subset ingest is checked against its subset."""
     name = "episode count matches the corpus"
     if expected is None:
-        corpus = Path(get_settings().transcripts_local_path)
+        settings = get_settings()
+        corpus = Path(settings.transcripts_local_path)
         if corpus.exists():
-            expected = len(list(corpus.glob("episodes/*/transcript.md")))
+            expected = len(discover_transcripts(corpus, settings.ingest_episode_limit))
     if expected is None:
         return Check(name, "warn", "no reference count: pass --expected-episodes or "
                                    "make TRANSCRIPTS_LOCAL_PATH available")

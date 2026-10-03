@@ -60,6 +60,24 @@ async def test_episode_count_must_match_the_corpus(db):
     assert result.status == "fail" and "expected 3" in result.detail
 
 
+async def test_without_a_count_the_corpus_is_counted_as_ingestion_would(db, tmp_path,
+                                                                     monkeypatch):
+    for name in ("a", "b", "c"):
+        (tmp_path / "episodes" / name).mkdir(parents=True)
+        (tmp_path / "episodes" / name / "transcript.md").write_text("x")
+    monkeypatch.setenv("TRANSCRIPTS_LOCAL_PATH", str(tmp_path))
+    await seed(db)
+
+    monkeypatch.setenv("INGEST_EPISODE_LIMIT", "2")
+    checks.get_settings.cache_clear()
+    assert (await checks.episodes_match_corpus(db, None)).status == "pass"
+
+    monkeypatch.setenv("INGEST_EPISODE_LIMIT", "0")
+    checks.get_settings.cache_clear()
+    result = await checks.episodes_match_corpus(db, None)
+    assert result.status == "fail" and result.detail == "2 episodes, expected 3"
+
+
 async def test_an_episode_without_chunks_fails(db):
     await seed(db)
     db.add(Episode(video_id="empty", guest="G", title="t", youtube_url="u",
