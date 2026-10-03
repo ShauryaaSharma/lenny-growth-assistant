@@ -2,6 +2,7 @@
 
 Run it directly:      python -m app.rag.ingest
 Or in Compose:        docker compose exec backend python -m app.rag.ingest
+Then remove episodes no transcript maps to any more:  ... -m app.rag.ingest --prune
 
 Properties that matter for handoff:
 
@@ -17,8 +18,10 @@ Properties that matter for handoff:
 from __future__ import annotations
 
 import asyncio
+import difflib
 import subprocess
 import time
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -29,7 +32,7 @@ from app.config import get_settings
 from app.db.models import Chunk, Episode, IngestionRun
 from app.db.session import get_sessionmaker
 from app.logging import configure_logging, get_logger
-from app.rag.chunking import parse_transcript_file
+from app.rag.chunking import EpisodeMeta, parse_frontmatter, parse_transcript_file
 from app.rag.embeddings import embed_passages
 
 log = get_logger(__name__)
@@ -71,6 +74,122 @@ def ensure_corpus(repo_url: str, local_path: str) -> Path:
 def discover_transcripts(root: Path, limit: int = 0) -> list[Path]:
     files = sorted(root.glob("episodes/*/transcript.md"))
     return files[:limit] if limit > 0 else files
+
+
+# Transcripts this alike (over their first 3,000 characters) are one episode
+# twice, not two episodes. Measured on the corpus: the copies score 0.98-1.00,
+# different episodes 0.11-0.33.
+SAME_EPISODE_RATIO = 0.9
+DUPLICATE, BORROWED = "duplicate", "borrowed"
+
+
+def resolve_shared_video_ids(files: list[Path]) -> dict[Path, str]:
+    """What to do with transcripts whose video id another transcript also has.
+
+    Upstream, 31 video ids each appear in two folders, because one folder's
+    title, URL, id and date were copied into the other's frontmatter. Episodes
+    are keyed by video id, so the second used to overwrite the first. Here:
+
+    - DUPLICATE: the same transcript twice (7 pairs). Skip the copy.
+    - BORROWED: a different episode carrying another's metadata. Ingest it, but
+      without that metadata (see `drop_borrowed_metadata`).
+
+    The metadata's owner is the one folder whose guest the title names. When
+    that's ambiguous -- no guest named, or both, or "Tomer Cohen" against
+    "Tomer Cohen 2.0" -- no folder can be trusted with it, and all are BORROWED.
+    """
+    groups: dict[str, list[tuple[Path, EpisodeMeta, str]]] = {}
+    for path in files:
+        try:
+            meta, body = parse_frontmatter(path.read_text(encoding="utf-8"), str(path))
+        except (OSError, ValueError):
+            continue  # the ingestion loop reports it
+        groups.setdefault(meta.video_id, []).append((path, meta, body))
+
+    decisions: dict[Path, str] = {}
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+        distinct = [group[0]]
+        for item in group[1:]:
+            if any(_same_episode(item[2], kept[2]) for kept in distinct):
+                decisions[item[0]] = DUPLICATE  # the first copy, in sorted order, is kept
+            else:
+                distinct.append(item)
+        if len(distinct) > 1:
+            owner = _metadata_owner(distinct)
+            decisions.update({path: BORROWED for path, _, _ in distinct if path != owner})
+    return decisions
+
+
+def _same_episode(a: str, b: str) -> bool:
+    return difflib.SequenceMatcher(None, a[:3000], b[:3000], autojunk=False).ratio() \
+        > SAME_EPISODE_RATIO
+
+
+def _metadata_owner(group: list[tuple[Path, EpisodeMeta, str]]) -> Path | None:
+    title = group[0][1].title.lower()
+    named = [(path, meta) for path, meta, _ in group if meta.guest.lower() in title]
+    if len(named) != 1:
+        return None
+    owner_path, owner = named[0]
+    if any(owner.guest.lower() in meta.guest.lower()
+           for path, meta, _ in group if path != owner_path):
+        return None
+    return owner_path
+
+
+def drop_borrowed_metadata(meta: EpisodeMeta, path: Path) -> EpisodeMeta:
+    """Keep the episode's own guest and text; drop the id, URL, title, date and
+    description it copied from another episode. The same honest fallback as an
+    episode whose upstream metadata is empty: cited by guest, with no link."""
+    return replace(meta, video_id=f"slug:{path.parent.name}", youtube_url="",
+                   title="Untitled episode", publish_date=None, duration_seconds=None,
+                   description=None, keywords=[])
+
+
+def corpus_video_ids(files: list[Path]) -> set[str]:
+    """The video ids these transcripts are ingested under: one per episode,
+    after copies are skipped and borrowed metadata dropped."""
+    shared = resolve_shared_video_ids(files)
+    ids: set[str] = set()
+    for path in files:
+        if shared.get(path) == DUPLICATE:
+            continue
+        try:
+            meta, _ = parse_frontmatter(path.read_text(encoding="utf-8"), str(path))
+        except (OSError, ValueError):
+            continue
+        if shared.get(path) == BORROWED:
+            meta = drop_borrowed_metadata(meta, path)
+        ids.add(meta.video_id)
+    return ids
+
+
+async def prune_episodes() -> list[str]:
+    """Delete episodes that no transcript in the corpus is ingested under any
+    more -- removed upstream, or left behind by a change in how shared video
+    ids are resolved. Never automatic: a clone that came back partial would
+    otherwise empty the knowledge base. Refuses on a subset ingest or an empty
+    corpus, for the same reason. Returns the video ids it deleted."""
+    settings = get_settings()
+    if settings.ingest_episode_limit:
+        raise RuntimeError("INGEST_EPISODE_LIMIT is set: pruning would delete every "
+                           "episode outside the subset")
+    files = discover_transcripts(Path(settings.transcripts_local_path))
+    if not files:
+        raise RuntimeError(f"no transcripts under {settings.transcripts_local_path}")
+    keep = await asyncio.to_thread(corpus_video_ids, files)
+    async with get_sessionmaker()() as db:
+        stale = list((await db.execute(
+            select(Episode.video_id).where(Episode.video_id.not_in(keep))
+            .order_by(Episode.video_id))).scalars())
+        if stale:
+            # Chunks go with their episode (ON DELETE CASCADE).
+            await db.execute(delete(Episode).where(Episode.video_id.in_(stale)))
+            await db.commit()
+    log.info("episodes_pruned", count=len(stale), video_ids=stale)
+    return stale
 
 
 async def _upsert_episode(
@@ -163,6 +282,7 @@ async def run_ingestion(force: bool = False) -> dict:
             ensure_corpus, settings.transcripts_repo_url, settings.transcripts_local_path
         )
         files = discover_transcripts(root, settings.ingest_episode_limit)
+        shared = await asyncio.to_thread(resolve_shared_video_ids, files)
         log.info("ingestion_started", episodes=len(files), force=force)
 
         for path in files:
@@ -179,11 +299,18 @@ async def run_ingestion(force: bool = False) -> dict:
                 skipped += 1
                 continue
 
-            # Upstream, two folders can carry the same video id (a duplicate
-            # folder, or a copy-pasted URL). Episodes are keyed by video id, so
-            # the second used to overwrite the first silently -- and, their
-            # hashes differing, re-embed both on every later run. The first in
-            # sorted order is kept; the other is skipped and logged.
+            # Folders sharing a video id: see resolve_shared_video_ids.
+            if shared.get(path) == DUPLICATE:
+                log.warning("duplicate_transcript_skipped", video_id=meta.video_id,
+                            path=str(path))
+                skipped += 1
+                continue
+            if shared.get(path) == BORROWED:
+                log.warning("borrowed_metadata_dropped", video_id=meta.video_id,
+                            path=str(path))
+                meta = drop_borrowed_metadata(meta, path)
+            # Anything still colliding would overwrite an episode ingested
+            # earlier in this run, and re-embed both on every later run.
             if meta.video_id in kept_path:
                 log.warning("duplicate_video_id", video_id=meta.video_id,
                             kept=kept_path[meta.video_id], skipped=str(path))
@@ -264,7 +391,14 @@ def main() -> None:
     configure_logging(settings.log_level, settings.log_format)
     import sys
 
-    asyncio.run(run_ingestion(force="--force" in sys.argv))
+    async def run(force: bool, prune: bool) -> None:
+        await run_ingestion(force=force)
+        if prune:
+            stale = await prune_episodes()
+            print(f"pruned {len(stale)} episodes no transcript maps to: "
+                  f"{', '.join(stale) or '-'}")
+
+    asyncio.run(run(force="--force" in sys.argv, prune="--prune" in sys.argv))
 
 
 if __name__ == "__main__":
