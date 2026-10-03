@@ -18,8 +18,13 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.rag.chunking import parse_frontmatter
-from app.rag.ingest import discover_transcripts
+from app.rag.ingest import (
+    BORROWED,
+    DUPLICATE,
+    corpus_video_ids,
+    discover_transcripts,
+    resolve_shared_video_ids,
+)
 
 # Lenny's Podcast began in 2019; anything earlier is a parsing error.
 DEFAULT_MIN_PUBLISH_DATE = date(2019, 1, 1)
@@ -55,35 +60,47 @@ async def _column(db: AsyncSession, sql: str, **params) -> list[str]:
 
 # --------------------------------------------------------------- the checks
 
-def corpus_video_ids() -> dict[str, list[str]] | None:
-    """Video id -> the transcript folders carrying it, for the transcripts
-    ingestion would pick up (same discovery, same INGEST_EPISODE_LIMIT), or
-    None when the corpus isn't on this machine."""
+@dataclass
+class Corpus:
+    """What ingestion makes of the transcripts on this machine."""
+    episode_ids: set[str]                 # the video id each episode is stored under
+    shared: dict[Path, str] = field(default_factory=dict)  # DUPLICATE / BORROWED
+
+
+def load_corpus() -> Corpus | None:
+    """The transcripts ingestion would pick up (same discovery, same
+    INGEST_EPISODE_LIMIT, same shared-id resolution), or None when the corpus
+    isn't on this machine."""
     settings = get_settings()
-    corpus = Path(settings.transcripts_local_path)
-    if not corpus.exists():
+    root = Path(settings.transcripts_local_path)
+    if not root.exists():
         return None
-    ids: dict[str, list[str]] = {}
-    for path in discover_transcripts(corpus, settings.ingest_episode_limit):
-        try:
-            meta, _ = parse_frontmatter(path.read_text(encoding="utf-8"), str(path))
-        except (OSError, ValueError):
-            continue  # ingestion skips it too, and logs why
-        ids.setdefault(meta.video_id, []).append(path.parent.name)
-    return ids
+    files = discover_transcripts(root, settings.ingest_episode_limit)
+    return Corpus(corpus_video_ids(files), resolve_shared_video_ids(files))
 
 
 async def episodes_match_corpus(db: AsyncSession, expected: int | None,
-                                ids: dict[str, list[str]] | None = None) -> Check:
-    """Every video in the corpus became exactly one episode.
+                                corpus: Corpus | None = None) -> Check:
+    """One episode per transcript, and nothing else.
 
-    Without an explicit count, the reference is the distinct video ids among
-    the transcripts ingestion would pick up, so a subset ingest is checked
-    against its subset, and two folders sharing an id count once (see
-    `duplicate_video_ids`)."""
+    Given the corpus, compares the stored video ids with the ones ingestion
+    produces from it: a row no transcript maps to is stale (an episode removed
+    upstream, or left by an older ingest), and a transcript with no row was
+    never ingested. Otherwise compares a count."""
     name = "episode count matches the corpus"
-    if expected is None and ids is not None:
-        expected = len(ids)
+    if expected is None and corpus is not None:
+        stored = set(await _column(db, "SELECT video_id FROM episodes"))
+        stale = sorted(stored - corpus.episode_ids)
+        missing = sorted(corpus.episode_ids - stored)
+        problems = []
+        if stale:
+            problems.append(f"{len(stale)} from no transcript "
+                            "(python -m app.rag.ingest --prune removes them)")
+        if missing:
+            problems.append(f"{len(missing)} transcripts not ingested")
+        return _result(name, len(problems), f"{len(stored)} episodes, one per transcript",
+                       f"{len(stored)} episodes, expected {len(corpus.episode_ids)}: "
+                       + "; ".join(problems), stale + missing)
     if expected is None:
         return Check(name, "warn", "no reference count: pass --expected-episodes or "
                                    "make TRANSCRIPTS_LOCAL_PATH available")
@@ -92,18 +109,20 @@ async def episodes_match_corpus(db: AsyncSession, expected: int | None,
                    f"{actual} episodes, expected {expected}")
 
 
-def duplicate_video_ids(ids: dict[str, list[str]] | None) -> Check:
-    """Folders that share a video id: only the first is ingested, so the
-    others' transcripts are not in the knowledge base. Upstream data, so a
-    warning to act on there, not a failure here."""
+def shared_video_ids(corpus: Corpus | None) -> Check:
+    """Transcripts that share a video id upstream (see
+    `app.rag.ingest.resolve_shared_video_ids`). Ingestion handles them, so this
+    is a warning: the fix -- the right metadata -- belongs upstream."""
     name = "no transcripts share a video id"
-    if ids is None:
+    if corpus is None:
         return Check(name, "warn", "corpus not available to check")
-    dupes = [f"{video_id}: {', '.join(folders)}"
-             for video_id, folders in sorted(ids.items()) if len(folders) > 1]
-    return _result(name, len(dupes), "every transcript has its own video id",
-                   f"{len(dupes)} video ids are shared by several transcripts; "
-                   "only the first of each is ingested", dupes, warn_only=True)
+    copies = sorted(path.parent.name for path, what in corpus.shared.items()
+                    if what == DUPLICATE)
+    borrowed = sorted(path.parent.name for path, what in corpus.shared.items()
+                      if what == BORROWED)
+    return _result(name, len(corpus.shared), "every transcript has its own video id",
+                   f"{len(copies)} copies skipped; {len(borrowed)} ingested without the "
+                   "id, link, title and date they shared", borrowed + copies, warn_only=True)
 
 
 async def every_episode_has_chunks(db: AsyncSession) -> Check:
@@ -258,10 +277,10 @@ async def sample_is_reachable(db: AsyncSession, sample: int) -> list[Check]:
 
 async def run_all(db: AsyncSession, *, expected_episodes: int | None = None,
                   earliest: date = DEFAULT_MIN_PUBLISH_DATE, sample: int = 20) -> list[Check]:
-    ids = corpus_video_ids()
+    corpus = load_corpus()
     return [
-        await episodes_match_corpus(db, expected_episodes, ids),
-        duplicate_video_ids(ids),
+        await episodes_match_corpus(db, expected_episodes, corpus),
+        shared_video_ids(corpus),
         await every_episode_has_chunks(db),
         await chunk_ordinals_are_contiguous(db),
         await no_orphan_chunks(db),
