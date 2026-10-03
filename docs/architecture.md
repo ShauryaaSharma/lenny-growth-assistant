@@ -310,10 +310,59 @@ the suggested tooling.
 
 Instead, `backend/app/llm/base.py` defines a minimal `LLMProvider` interface —
 `chat()`, `health()` — and the agent loop (`backend/app/agent/runtime.py`) is
-written against that interface only. `OllamaProvider` and
-`OpenAICompatProvider` both implement it. The result: one code path, two
-runtimes, and the cost is real — the SDKs' built-in session and tool plumbing
+written against that interface only. `OllamaProvider`,
+`OpenAICompatProvider`, `BedrockProvider` and `AzureOpenAIProvider` implement
+it. The result: one code path, several runtimes, and the cost is real — the SDKs' built-in session and tool plumbing
 is hand-rolled here instead. That trade is made explicitly, not silently.
+
+### Why not LangGraph
+
+LangGraph is the obvious alternative for a loop like this, so here is why the
+loop is hand-written, and when that should change.
+
+**What LangGraph would bring.** An explicit graph of nodes and conditional
+edges, a typed state object, checkpointing (a turn can pause and resume, even
+across a restart), interrupts for human approval, node-level streaming, and a
+diagram of the flow for free.
+
+**What this loop already has, without it.** The loop above *is* a small state
+machine: one model-call step, one tool step, and the guards are its
+conditional edges. Its state is the per-turn context (`ctx.searched`,
+`ctx.grounded`, the artifacts so far, which guards have fired), bounded by
+`MAX_ITERATIONS`. Streaming already exists (`on_event` feeds the SSE
+endpoint), as does persistence at the granularity the product needs: messages
+in Postgres, and every model call and tool call as a trace span.
+
+**What a LangGraph variant behind a flag would cost.**
+- A second implementation of every guard, which must stay in sync with the
+  first. The guards are the part of this system with the most documented bugs
+  (agent-transcripts 07, 09, 11), so two copies double the place those bugs live.
+- An adapter between `LLMProvider` and LangChain's chat-model and message
+  types, or a rewrite of the providers onto them.
+- A new dependency tree, for a `run_agent` of about 200 lines.
+- And no fix for the bugs that actually happened. Those were *state
+  bookkeeping* errors, a flag not set after a successful tool call (transcript
+  09). A graph framework would move that flag into a state object, not make
+  it correct. The scripted-model routing tests and the agent harness are what
+  catch that class of bug, and they would be needed either way.
+
+**When it would be worth it.** If a turn needed to *pause*, for example a
+human approving an artifact before it is created, or a long essay generation
+surviving a backend restart, checkpointing and interrupts are exactly that,
+and rebuilding them by hand would be the wrong call. Then the port is
+mechanical:
+
+| This loop | LangGraph |
+|---|---|
+| `chat_with_fallback(...)` step | `call_model` node |
+| tool execution, with the two `create_artifact` interceptions | `run_tools` node |
+| forced-retrieval, ungrounded and artifact-nudge guards | a conditional edge after `call_model` |
+| per-turn `ctx` | the graph's typed state |
+| `MAX_ITERATIONS` + closing no-tools turn | `recursion_limit` + a closing node |
+
+It should be done as a replacement, not a parallel variant. Its acceptance
+test would be the existing ones: the scripted-model routing tests in
+`tests/test_agent_routing.py` and the agent harness, unchanged and passing.
 
 ### The loop
 
