@@ -20,6 +20,8 @@ from app.rag.retriever import RetrievalResult
 from tests.conftest import FakeProvider, text_response, tool_response
 from tests.test_agent_routing import make_chunk
 
+pytestmark = pytest.mark.unit
+
 CHUNKS = {name: make_chunk(chunk_id=name, guest=f"Guest {name}") for name in "abcd"}
 
 

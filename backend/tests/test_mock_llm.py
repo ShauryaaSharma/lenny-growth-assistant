@@ -16,6 +16,8 @@ import pytest
 
 from devtools.mock_llm import Handler, respond
 
+pytestmark = pytest.mark.unit
+
 TOOLS = [{"type": "function", "function": {"name": "search_transcripts"}}]
 
 

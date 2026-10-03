@@ -44,16 +44,19 @@ from tests.test_api import client_for, sessionmaker  # noqa: F401 - fixture
     (None, False, None),
     ("", True, None),
 ])
+@pytest.mark.unit
 def test_parse_date_bound(value, end, expected):
     assert parse_date_bound(value, end=end) == expected
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize("value", ["last year", "2023/05", "05-2023", "2023-13", "2023-02-30"])
 def test_parse_date_bound_rejects(value):
     with pytest.raises(ValueError):
         parse_date_bound(value)
 
 
+@pytest.mark.unit
 def test_filters_reject_a_reversed_range():
     with pytest.raises(ValueError, match="after"):
         SearchFilters.parse(since="2024", until="2023")
@@ -65,14 +68,17 @@ def test_filters_reject_a_reversed_range():
     ({"until": "2023"}, "until 2023-12-31"),
     ({"guest": " Casey ", "since": "2023", "until": "2023"}, "Casey, 2023-01-01 to 2023-12-31"),
 ])
+@pytest.mark.unit
 def test_describe(kwargs, text):
     assert SearchFilters.parse(**kwargs).describe() == text
 
 
+@pytest.mark.unit
 def test_blank_guest_is_no_filter():
     assert SearchFilters.parse(guest="   ").active is False
 
 
+@pytest.mark.unit
 def test_like_wildcards_in_a_guest_name_are_literal():
     _, params = SearchFilters(guest="100%_real").where()
     assert params["guest"] == r"%100\%\_real%"
@@ -99,22 +105,26 @@ async def run_tool(args):
                               "search_transcripts", args)
 
 
+@pytest.mark.unit
 async def test_tool_passes_filters_through(captured_search):
     await run_tool({"query": "retention", "guest": "Casey Winters", "since": "2023"})
     assert captured_search == [SearchFilters(guest="Casey Winters", since=date(2023, 1, 1))]
 
 
+@pytest.mark.unit
 async def test_tool_without_filters_searches_unfiltered(captured_search):
     await run_tool({"query": "retention"})
     assert captured_search[0].active is False
 
 
+@pytest.mark.unit
 async def test_tool_reports_a_bad_date_to_the_model(captured_search):
     result = await run_tool({"query": "retention", "since": "last spring"})
     assert "YYYY" in result["error"]
     assert captured_search == []
 
 
+@pytest.mark.unit
 async def test_tool_says_when_no_episode_matches_rather_than_no_topic(captured_search):
     result = await run_tool({"query": "retention", "guest": "Nobody"})
     assert result["grounded"] is False
@@ -137,10 +147,12 @@ GUESTS = ["Adam Fishman", "Adam Grenier", "Casey Winters", "Aishwarya Reganti + 
     ("Casey Wintersmith's take?", []),                        # not a whole-name match
     ("How do I improve retention?", []),
 ])
+@pytest.mark.unit
 def test_match_guest_names(message, named):
     assert match_guest_names(message, GUESTS) == named
 
 
+@pytest.mark.slow
 @requires_db
 async def test_tool_filters_by_a_guest_the_user_named_when_the_model_did_not(db):
     """What llama3.2:3b actually does: the name goes into the query text."""
@@ -158,6 +170,7 @@ async def test_tool_filters_by_a_guest_the_user_named_when_the_model_did_not(db)
     assert {r["guest"] for r in result["results"]} == {"Casey Winters"}
 
 
+@pytest.mark.slow
 @requires_db
 async def test_nothing_relevant_from_the_guest_says_so_in_those_words(db):
     """Not 'the podcast never covers this' -- only that this guest didn't."""
@@ -174,6 +187,7 @@ async def test_nothing_relevant_from_the_guest_says_so_in_those_words(db):
     assert _summarize_result("search_transcripts", result) == "nothing relevant found (Casey)"
 
 
+@pytest.mark.slow
 @requires_db
 async def test_two_named_guests_are_not_filtered_to_one(db):
     await chunks(db, await episode(db, "Casey Winters"), [RETENTION])
@@ -188,6 +202,7 @@ async def test_two_named_guests_are_not_filtered_to_one(db):
     assert {r["guest"] for r in result["results"]} == {"Casey Winters", "Adam Fishman"}
 
 
+@pytest.mark.slow
 @requires_db
 async def test_the_models_own_guest_argument_wins(db):
     await chunks(db, await episode(db, "Casey Winters"), [RETENTION])
@@ -202,6 +217,7 @@ async def test_the_models_own_guest_argument_wins(db):
     assert {r["guest"] for r in result["results"]} == {"Adam Fishman"}
 
 
+@pytest.mark.unit
 def test_progress_feed_shows_filters():
     args = {"query": "retention", "guest": "Casey Winters", "since": "2023"}
     assert _describe_call("search_transcripts", args) == "retention (Casey Winters, since 2023-01-01)"
@@ -238,6 +254,7 @@ RETENTION = ("Onboarding is the most important lever for user retention, because
              "every new user experiences it.")
 
 
+@pytest.mark.slow
 @requires_db
 async def test_filter_applies_before_the_candidate_pool_is_cut(db):
     """More than a pool's worth of closer passages from other guests: a
@@ -257,6 +274,7 @@ async def test_filter_applies_before_the_candidate_pool_is_cut(db):
     assert {c.guest for c in filtered.chunks} == {"Casey Winters"}
 
 
+@pytest.mark.slow
 @requires_db
 async def test_guest_match_is_partial_and_covers_joint_episodes(db):
     joint = await episode(db, "Aishwarya Reganti + Kiriti Badam")
@@ -266,6 +284,7 @@ async def test_guest_match_is_partial_and_covers_joint_episodes(db):
     assert [c.guest for c in found.chunks] == ["Aishwarya Reganti + Kiriti Badam"]
 
 
+@pytest.mark.slow
 @requires_db
 async def test_date_range(db):
     for year in (2022, 2023, 2024):
@@ -281,6 +300,7 @@ async def test_date_range(db):
         "an episode with no publish date cannot satisfy a date range"
 
 
+@pytest.mark.slow
 @requires_db
 async def test_unknown_guest_is_reported_as_such(db):
     await chunks(db, await episode(db, "Casey Winters"), [RETENTION])
@@ -289,6 +309,7 @@ async def test_unknown_guest_is_reported_as_such(db):
     assert (result.grounded, result.reason, result.chunks) == (False, "no_matching_episodes", [])
 
 
+@pytest.mark.slow
 @requires_db
 async def test_a_wildcard_guest_matches_nobody(db):
     await chunks(db, await episode(db, "Casey Winters"), [RETENTION])
@@ -297,6 +318,7 @@ async def test_a_wildcard_guest_matches_nobody(db):
     assert result.reason == "no_matching_episodes"
 
 
+@pytest.mark.slow
 @requires_db
 async def test_filters_still_respect_the_grounding_floor(db):
     """The right guest talking about something else is still 'not covered'."""
@@ -310,6 +332,8 @@ async def test_filters_still_respect_the_grounding_floor(db):
 
 # ------------------------------------------------------------------- API
 
+@pytest.mark.slow
+@pytest.mark.api
 @requires_db
 async def test_api_search_with_filters(sessionmaker):  # noqa: F811
     from app.db.session import get_db
@@ -338,6 +362,7 @@ async def test_api_search_with_filters(sessionmaker):  # noqa: F811
     {"query": "q", "since": "2023"},          # the API takes full dates
     {"query": "q", "guest": "x" * 201},
 ])
+@pytest.mark.api
 async def test_api_search_filter_validation(body):
     from app.main import create_app
 

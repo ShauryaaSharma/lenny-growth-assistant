@@ -8,12 +8,16 @@ never exercise this file's actual logic.
 
 from __future__ import annotations
 
+import pytest
+
 from app.skills.ship30.skill import (
     MAX_WORDS,
     MIN_WORDS,
     _revision_prompt,
     check_rubric,
 )
+
+pytestmark = pytest.mark.unit
 
 GOOD_ESSAY = (
     "# How Onboarding Quietly Decides Your Retention Curve\n\n"

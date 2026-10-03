@@ -13,3 +13,21 @@ ignore = ["S101"]  # assert is fine in tests
 asyncio_mode = "auto"
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+# A typo'd marker is an error, not a silently unselected test.
+addopts = "--strict-markers"
+markers = [
+    "unit: in-process only -- no database, no network, no embedding model (enforced in conftest)",
+    "api: goes through the HTTP layer (the ASGI app, or a local server)",
+    "integration: needs a real Postgres + pgvector; derived from requires_db, not written by hand",
+    "eval: tests the evaluation harnesses' own scoring",
+    "slow: computes real embeddings with the ONNX model on CPU",
+]
+
+[tool.coverage.run]
+source = ["app"]
+
+[tool.coverage.report]
+# The measured level when this floor was set (72.33% of 2,259 statements,
+# full suite against Postgres), rounded down. Raise it when coverage rises;
+# never lower it to make a change pass.
+fail_under = 72

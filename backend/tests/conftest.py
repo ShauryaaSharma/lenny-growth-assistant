@@ -73,6 +73,50 @@ requires_db = pytest.mark.skipif(
     ),
 )
 
+# ------------------------------------------------------------ test tiers
+#
+# Every test carries one tier marker (see pyproject.toml). `integration` is
+# not written by hand: needing the test database is what makes a test an
+# integration test, so it is derived from `requires_db` -- one source of
+# truth instead of two that can drift.
+
+TIERS = ("unit", "api", "integration", "eval")
+
+
+def _needs_database(item: pytest.Item) -> bool:
+    return any(str(m.kwargs.get("reason", "")).startswith("No test database")
+               for m in item.iter_markers("skipif"))
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    untiered = []
+    for item in items:
+        if _needs_database(item):
+            item.add_marker(pytest.mark.integration)
+        if not any(item.get_closest_marker(t) for t in TIERS):
+            untiered.append(item.nodeid)
+    if untiered:
+        raise pytest.UsageError(
+            "every test needs a tier marker (" + ", ".join(TIERS) + "); missing on:\n  "
+            + "\n  ".join(untiered)
+        )
+
+
+@pytest.fixture(autouse=True)
+def _unit_tests_stay_in_process(request: pytest.FixtureRequest, monkeypatch) -> None:
+    """A unit test must not load the 130MB embedding model. One did, by
+    running the real search tool without a fake: it paid ~7s to load the
+    model, then failed on a None database, and passed anyway because the
+    failure was swallowed as a tool error. This makes that a loud failure."""
+    if request.node.get_closest_marker("unit"):
+        def refuse(*_args, **_kwargs):
+            raise RuntimeError(
+                "a unit test tried to load the embedding model: give it a fake "
+                "search (grounded_search / empty_search) or make it an integration test"
+            )
+
+        monkeypatch.setattr("app.rag.embeddings.get_model", refuse)
+
 
 @pytest_asyncio.fixture
 async def db() -> AsyncGenerator[AsyncSession, None]:

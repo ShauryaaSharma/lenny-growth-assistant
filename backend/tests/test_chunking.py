@@ -15,6 +15,8 @@ from app.rag.chunking import (
     parse_turns,
 )
 
+pytestmark = pytest.mark.unit
+
 VALID_FRONTMATTER = """---
 guest: Adam Fishman
 title: How to build a high-performing growth team
