@@ -11,12 +11,16 @@ tool, and scripting it with a fake retriever would defeat it.
 
 from __future__ import annotations
 
+import pytest
+
 from app.evals.run_eval import (
     MAX_FALSE_GROUND_RATE,
     MIN_GROUNDED_RATE,
     QuestionResult,
     summarize,
 )
+
+pytestmark = pytest.mark.eval
 
 
 def make_result(

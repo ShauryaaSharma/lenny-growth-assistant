@@ -69,6 +69,7 @@ async def run_collecting(message: str) -> tuple[list[dict], object]:
     return events, result
 
 
+@pytest.mark.unit
 async def test_a_grounded_turn_reports_each_step(monkeypatch, grounded_search):  # noqa: F811
     install(monkeypatch,
             tool_response("search_transcripts", query="retention benchmarks"),
@@ -84,6 +85,7 @@ async def test_a_grounded_turn_reports_each_step(monkeypatch, grounded_search): 
     assert result.content == "Retention compounds [1]."
 
 
+@pytest.mark.unit
 async def test_guards_are_reported(monkeypatch, grounded_search):  # noqa: F811
     provider = install(monkeypatch,
                        text_response("PMF is when customers pull."),       # skips search
@@ -96,6 +98,7 @@ async def test_guards_are_reported(monkeypatch, grounded_search):  # noqa: F811
     assert any(m.content == FORCE_SEARCH_NUDGE for call in provider.calls for m in call)
 
 
+@pytest.mark.unit
 async def test_an_empty_search_is_summarised_honestly(monkeypatch, empty_search):  # noqa: F811
     install(monkeypatch,
             tool_response("search_transcripts", query="sourdough"),
@@ -109,6 +112,7 @@ async def test_an_empty_search_is_summarised_honestly(monkeypatch, empty_search)
     assert {"type": "guard", "guard": "ungrounded"} in events
 
 
+@pytest.mark.unit
 async def test_draft_answers_never_appear_in_events(monkeypatch, grounded_search):  # noqa: F811
     """The rejected draft is exactly what the guards exist to hide."""
     install(monkeypatch,
@@ -122,6 +126,7 @@ async def test_draft_answers_never_appear_in_events(monkeypatch, grounded_search
     assert "Grounded answer" not in json.dumps(events)
 
 
+@pytest.mark.unit
 async def test_a_failing_sink_does_not_break_the_turn(monkeypatch, grounded_search):  # noqa: F811
     install(monkeypatch,
             tool_response("search_transcripts", query="q"),
@@ -134,6 +139,7 @@ async def test_a_failing_sink_does_not_break_the_turn(monkeypatch, grounded_sear
     assert result.content == "Answer [1]."
 
 
+@pytest.mark.unit
 async def test_no_sink_is_the_old_behaviour(monkeypatch, grounded_search):  # noqa: F811
     install(monkeypatch,
             tool_response("search_transcripts", query="q"),
@@ -172,6 +178,7 @@ async def stream(client, session_id: str, message: str = "What about retention?"
     return response, parse_sse(response.text) if response.status_code == 200 else []
 
 
+@pytest.mark.api
 @requires_db
 async def test_endpoint_streams_progress_then_the_saved_turn(
         stream_api, monkeypatch, grounded_search):  # noqa: F811
@@ -194,6 +201,7 @@ async def test_endpoint_streams_progress_then_the_saved_turn(
     assert detail["title"] == "What about retention?"
 
 
+@pytest.mark.api
 @requires_db
 async def test_done_matches_what_the_non_streaming_endpoint_returns(
         stream_api, monkeypatch, grounded_search):  # noqa: F811
@@ -219,6 +227,7 @@ async def test_done_matches_what_the_non_streaming_endpoint_returns(
     assert without_ids(streamed["message"]["citations"]) == without_ids(plain["message"]["citations"])
 
 
+@pytest.mark.api
 @requires_db
 async def test_llm_outage_ends_the_stream_with_a_typed_error_and_keeps_the_turn(
         stream_api, sessionmaker, monkeypatch):  # noqa: F811
@@ -240,6 +249,7 @@ async def test_llm_outage_ends_the_stream_with_a_typed_error_and_keeps_the_turn(
     assert [(m.role, m.content) for m in stored] == [("user", "What about retention?")]
 
 
+@pytest.mark.api
 @requires_db
 async def test_an_unexpected_failure_still_ends_the_stream(stream_api, monkeypatch):
     async def boom(*a, **k):
@@ -250,6 +260,7 @@ async def test_an_unexpected_failure_still_ends_the_stream(stream_api, monkeypat
     assert events[-1]["error"]["code"] == "internal_error"
 
 
+@pytest.mark.api
 @requires_db
 async def test_keepalives_are_sent_while_the_model_is_slow(stream_api, monkeypatch):
     monkeypatch.setattr(routes_chat, "KEEPALIVE_SECONDS", 0.05)
@@ -265,6 +276,7 @@ async def test_keepalives_are_sent_while_the_model_is_slow(stream_api, monkeypat
     assert events[-1]["type"] == "done"
 
 
+@pytest.mark.api
 @requires_db
 async def test_missing_session_is_a_plain_404_not_a_stream(stream_api):
     response = await stream_api.post(f"/api/sessions/{MISSING_ID}/chat/stream",
@@ -273,6 +285,7 @@ async def test_missing_session_is_a_plain_404_not_a_stream(stream_api):
     assert response.json()["error"]["code"] == "session_not_found"
 
 
+@pytest.mark.api
 @pytest.mark.parametrize("body", [{}, {"message": "   "}, {"message": "x" * 8001}])
 async def test_invalid_messages_are_rejected_before_streaming(body):
     async with client_for(create_app()) as client:
@@ -281,6 +294,7 @@ async def test_invalid_messages_are_rejected_before_streaming(body):
     assert response.json()["error"]["code"] == "validation_error"
 
 
+@pytest.mark.api
 @requires_db
 async def test_the_turn_is_saved_even_if_nobody_reads_the_stream(
         stream_api, sessionmaker, monkeypatch, grounded_search):  # noqa: F811

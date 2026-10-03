@@ -18,7 +18,7 @@ from app.rag.embeddings import embed_passages, embed_query
 from app.rag.retriever import search
 from tests.conftest import requires_db
 
-pytestmark = requires_db
+pytestmark = [requires_db, pytest.mark.slow]
 
 
 async def _make_episode(db, **overrides) -> Episode:

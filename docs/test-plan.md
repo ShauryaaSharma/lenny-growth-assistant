@@ -1,9 +1,40 @@
-# Manual test plan
+# Test plan
 
-Automated tests (`backend/tests/`) cover chunking, sanitisation, and agent
-routing logic. This plan covers what they cannot: the actual UI, the actual
-Ollama integration, and the actual browser sandbox behaviour. Run through this
-before any release-quality claim about the system.
+Two parts: the automated suites, by type, and the manual plan for what they
+cannot reach — the real UI, the real Ollama integration, and the browser
+sandbox.
+
+## Automated tests, by type
+
+Every pytest test carries one tier marker (registered in
+`backend/pyproject.toml`, enforced at collection by `backend/tests/conftest.py`,
+which fails the run if a test has none). `integration` is derived from the
+`requires_db` marker rather than written by hand, and a `unit` test that tries
+to load the embedding model fails instead of quietly doing real I/O.
+
+Run the pytest commands from `backend/`. Database-backed tests need a Postgres
+with pgvector at `TEST_DATABASE_URL` (see the README's Testing section) and
+skip without one.
+
+| Type | Marker / tool | What it covers | Count | Command |
+|---|---|---|---|---|
+| Unit | `unit` | Chunking, sanitiser, reducers, trace store, Ship 30 rubric, agent routing and guards with a scripted model, citation numbering, the mock LLM | 177 | `python -m pytest -m unit` |
+| API | `api` | Every endpoint in-process over HTTP: status codes, validation, the error envelope, chat persistence, the SSE stream | 68 | `python -m pytest -m api` |
+| Integration | `integration` (derived) | Hybrid retrieval, filters and sessions against real Postgres + pgvector; overlaps with API for the 24 HTTP tests that need the database | 51 | `python -m pytest -m integration` |
+| Eval logic | `eval` | The eval harnesses' own scoring arithmetic (not live model runs) | 38 | `python -m pytest -m eval` |
+| Fast lane | `not slow` | Everything except the 22 tests that compute real embeddings on CPU | 288 | `python -m pytest -m "not slow"` |
+| Everything, with coverage | — | The full suite; fails below the coverage floor in `pyproject.toml` (72%) | 310 | `python -m pytest --cov=app --cov-report=term` |
+| External API contract | Postman / Newman | All 13 routes from outside the process, with JSON-schema, status and timing checks and 404/422 negatives | 36 requests | see `postman/README.md` |
+| Load | Locust | Traffic mix against the running API, failing past a p95 or error-rate limit | — | see `backend/loadtests/README.md` |
+| Live evaluation | eval harnesses | Grounding rate, false-ground rate and agent routing against the real model and corpus | 24 + 8 cases | see the README's Evaluation section |
+
+Counts are from `python -m pytest --collect-only -m <marker>` on this
+commit. Use `--cov` only with the full suite: a subset covers less code by
+design and will fail the floor.
+
+## Manual test plan
+
+Run through this before any release-quality claim about the system.
 
 Prerequisite: `docker compose up --build`, then wait for `knowledge_base.ready`
 in `GET /health/deep` (or for the amber banner in the UI to clear).

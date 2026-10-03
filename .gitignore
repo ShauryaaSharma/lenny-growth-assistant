@@ -41,3 +41,8 @@ Thumbs.db
 
 # Load test output
 backend/loadtests/results/
+
+# Coverage output
+.coverage
+coverage.xml
+htmlcov/

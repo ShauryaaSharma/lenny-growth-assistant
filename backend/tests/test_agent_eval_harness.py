@@ -12,8 +12,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import pytest
+
 from app.evals.agent_scenarios import AgentScenario, ScenarioTurn
 from app.evals.run_agent_eval import ScenarioResult, TurnResult, run_scenario, score_turn, summarize
+
+pytestmark = pytest.mark.eval
 
 
 @dataclass

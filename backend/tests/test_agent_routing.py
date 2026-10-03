@@ -22,6 +22,8 @@ from app.rag import retriever as retriever_module
 from app.rag.retriever import RetrievalResult, RetrievedChunk
 from tests.conftest import FakeProvider, text_response, tool_response
 
+pytestmark = pytest.mark.unit
+
 
 def make_chunk(**overrides) -> RetrievedChunk:
     defaults = dict(
@@ -541,7 +543,7 @@ class TestBlockedUngroundedArtifact:
     because it only ever watched for a bare text answer given without
     searching, not for a tool call used as an escape hatch instead."""
 
-    async def test_create_artifact_before_any_search_is_blocked(self, monkeypatch):
+    async def test_create_artifact_before_any_search_is_blocked(self, monkeypatch, empty_search):
         provider = FakeProvider(
             [
                 # Straight to create_artifact, no search_transcripts call --

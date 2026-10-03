@@ -12,6 +12,8 @@ import pytest
 
 from app.security.sanitize import sanitize_artifact, sanitize_html, sanitize_markdown
 
+pytestmark = pytest.mark.unit
+
 
 class TestScriptExecution:
     @pytest.mark.parametrize(

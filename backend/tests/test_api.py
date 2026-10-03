@@ -39,6 +39,8 @@ from app.rag.retriever import RetrievalResult, RetrievedChunk
 from app.schemas.api import KnowledgeBaseStatus
 from tests.conftest import TEST_DATABASE_URL, requires_db
 
+pytestmark = pytest.mark.api
+
 MISSING_ID = "00000000-0000-0000-0000-000000000000"
 
 

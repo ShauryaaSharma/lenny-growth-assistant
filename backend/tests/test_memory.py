@@ -17,6 +17,8 @@ from app.memory import trace
 from app.memory.procedural import PROCEDURAL_MEMORY, render_primary_for_system_prompt
 from app.memory.reducers import build_agent_messages, reduce_history, reduce_turn
 
+pytestmark = pytest.mark.unit
+
 
 class TestReduceHistory:
     def test_shorter_than_limit_is_unchanged(self):
