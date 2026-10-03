@@ -178,9 +178,14 @@ Migration: [backend/alembic/versions/0001_initial_schema.py](../backend/alembic/
 clone/pull corpus (git, shallow)
         │
         ▼
+resolve folders that share a video id  (resolve_shared_video_ids)
+        │
+        ▼
 for each episodes/*/transcript.md:
         │
+        ├─ skip it if it's a copy of another folder's transcript
         ├─ parse YAML frontmatter + speaker turns  (rag/chunking.py)
+        │      drop id/URL/title/date it borrowed from another episode
         ├─ hash content → skip if unchanged from last run
         ├─ chunk on whole speaker turns, ~400 tokens, 80 overlap
         │      splitting only a monologue that alone exceeds the budget
@@ -205,6 +210,29 @@ produces confidently-cited nonsense. Flagging rather than deleting keeps the
 data auditable — an operator can query `is_sponsor` directly rather than trust
 that a deletion pass did the right thing.
 
+**Four transcript layouts, not one.** Most of the corpus writes turns as
+`Speaker (HH:MM:SS):`. About a tenth uses `Speaker (MM:SS):`, a one-line
+`[HH:MM:SS] Speaker: text`, or untimed `Speaker:` headers, and many files use a
+bare `(MM:SS):` line to continue the same speaker. The parser reads all of
+them. The two rarer layouts are tried only when a file has no timestamped turn,
+and only accept name-like speaker labels. Until this was fixed, 30 of 303
+transcripts produced no chunks without raising, which is how they survived a
+whole-corpus parse test (agent-transcripts/18).
+
+**Why shared video ids are resolved, not trusted.** Episodes are keyed by
+YouTube video id, and upstream 31 ids each appear in two folders: one folder's
+title, URL, id and date were copied into the other's. Left alone, the second
+folder overwrote the first, so 31 transcripts vanished and 31 episodes showed
+one guest's words under another's title. Ingestion now resolves each pair
+before it starts. A copy of the same transcript is skipped (7 pairs). For two
+different episodes, the folder whose guest the title names keeps the metadata,
+and any folder that doesn't keeps its own guest and text but drops the
+borrowed id, URL, title and date: cited by guest, with no link, and outside
+date filters. When the title can't tell the two apart ("Tomer Cohen" vs
+"Tomer Cohen 2.0"), neither keeps it. Rows ingested before this are removed
+with `python -m app.rag.ingest --prune`, which is explicit rather than
+automatic, so a partial clone can never empty the knowledge base.
+
 **Why per-episode transactions:** a corpus-wide transaction means one malformed
 file aborts everything ingested before it. A per-episode transaction means a
 failure on episode 200 still leaves episodes 1–199 committed, and the failure
@@ -212,7 +240,7 @@ is recorded in `ingestion_runs` rather than silently dropped.
 
 **Measured throughput and its consequence.** On the 16-thread CPU-only
 reference machine, embedding the corpus proceeds at roughly 0.7–1 chunk/second
-— the full 17,785-chunk corpus is a multi-hour run. This is CPU-bound ONNX
+— the full ~18,600-chunk corpus is a multi-hour run. This is CPU-bound ONNX
 transformer inference; no batching or threading configuration found in testing
 materially changed it (see the note in
 [embeddings.py](../backend/app/rag/embeddings.py) about why `parallel=N`
